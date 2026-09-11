@@ -92,8 +92,7 @@ def main():
             "license": " OR ".join(info.get("LICENSE", [])), "url": info.get("URL", [""])[0], "notice_files": len(notices)})
     for name, source in [("UxPlay", ROOT/"vendor/uxplay/LICENSE"),
                          ("iPhoneMirror", ROOT/"vendor/iphone-mirror/LICENSE"),
-                         ("windows-ble-hid", ROOT/"vendor/licenses/windows-ble-hid-MIT.txt"),
-                         ("WinBleTouch", ROOT/"vendor/licenses/WinBleTouch-MIT.txt")]:
+                         ("windows-ble-hid", ROOT/"vendor/licenses/windows-ble-hid-MIT.txt")]:
         target = args.output / "native" / name / source.name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
@@ -141,7 +140,6 @@ def main():
         "| UxPlay | f2c4a66e704859e791e139db4f3fdba79cd838f9 | GPL-3.0-or-later |",
         "| FFmpeg AAC/ALAC libraries | 9.0.1, minimal audio build | LGPL-2.1-or-later |",
         "| windows-ble-hid report design | 9a4f45129779ec3bef368ea4ffcdcde795a57b65 | MIT |",
-        "| WinBleTouch finger descriptor | d80d659af53188c45d3d2966f86ec35c0849287f | MIT |",
         "| WiX bootstrapper | 3.14.1 | MS-RL; source and notices supplied separately from the application |",
         "| libusb / libusb-win32 | Pinned native-core third_party files | LGPL-2.1-or-later / LGPL-3.0-only |"]
     lines += [f"| {p['name']} | {p['version']} | {p['license']} |" for p in package_rows]

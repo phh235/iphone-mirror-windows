@@ -85,20 +85,7 @@ See VALIDATION.md for actual evidence. A successful build or desktop-host instal
 does not replace clean-VM, input, latency, reconnect or sustained-device gates.
 
 
-## Direct touch and local cleanup
-
-Experimental Direct touch now uses the standalone single-finger HID digitizer
-from MIT WinBleTouch d80d659af53188c45d3d2966f86ec35c0849287f (Report ID 1).
-The relative mouse/keyboard profile remains separate.
-Normalized coordinates span 0..10000; Tip Switch, Confidence and Contact ID are
-preserved. A fresh Report Map read and an active touch subscriber are required
-before touch delivery. Only button-down/drag/up produces contacts; hovering does
-not. iPhone Zoom at 1x is an upstream setup assumption. The user-reported physical
-test failed with no phone response; there is no successful absolute-touch validation.
-The normal toolbar entry is removed and no automatic control path selects it.
-Explicit --ble-direct-touch and --direct-touch-one-click diagnostic opt-ins remain.
-The latter captures one real click with live queue/GATT tracing. No new physical
-result is available yet. See DIRECT_TOUCH_DEBUG.md and VALIDATION.md.
+## Local cleanup
 
 Generated build/tool/source caches are disposable and ignored by Git. The runnable
 portable folder and local validation evidence are retained by scripts/clean.ps1.

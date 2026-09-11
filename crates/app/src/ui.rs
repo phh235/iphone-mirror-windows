@@ -346,22 +346,11 @@ pub fn run(smoke_test: bool) -> Result<(), Box<dyn std::error::Error>> {
         layout(hwnd, &state.borrow());
         SetTimer(Some(hwnd), 1, 200, None);
         let _ = ShowWindow(hwnd, if smoke_test { SW_HIDE } else { SW_SHOW });
-        // Experimental diagnostic opt-in only: the physical touch test failed.
-        // Never expose this profile in the normal toolbar or select it automatically.
-        let direct_touch = crate::touch_debug::enabled()
-            || std::env::args().any(|arg| arg == "--ble-direct-touch");
-        if direct_touch || std::env::args().any(|arg| arg == "--ble-control") {
+        if std::env::args().any(|arg| arg == "--ble-control") {
             let panel = crate::ble_panel::BlePanel::create(hwnd)?;
             panel.show();
             state.borrow_mut().ble_panel = Some(panel);
-            state
-                .borrow()
-                .input
-                .send(InputCommand::BleStart(if direct_touch {
-                    imirror_input_ble::HidProfile::DirectTouch
-                } else {
-                    imirror_input_ble::HidProfile::RelativeMouse
-                }));
+            state.borrow().input.send(InputCommand::BleStart);
         }
         let mut message = MSG::default();
         loop {
@@ -798,9 +787,7 @@ unsafe extern "system" fn window_proc(
                                 panel.show();
                             }
                             if state.input_snapshot.mode != 1 {
-                                state.input.send(InputCommand::BleStart(
-                                    imirror_input_ble::HidProfile::RelativeMouse,
-                                ));
+                                state.input.send(InputCommand::BleStart);
                             }
                         }
                         crate::ble_panel::MOVE_RIGHT
@@ -904,37 +891,12 @@ unsafe extern "system" fn preview_proc(
                 | WM_KILLFOCUS
                 | WM_CAPTURECHANGED
         ) {
-            let touch_probe = crate::touch_debug::enabled();
-            if touch_probe && msg == WM_LBUTTONDOWN {
-                let coordinates = format!(
-                    "preview WM_LBUTTONDOWN; client physical pixels=({},{}); HWND={:?}",
-                    lparam.0 as u16 as i16,
-                    (lparam.0 >> 16) as u16 as i16,
-                    hwnd
-                );
-                if !crate::touch_debug::trace().begin(coordinates) {
-                    return LRESULT(0);
-                }
-            }
-            if touch_probe && msg == WM_LBUTTONUP {
-                crate::touch_debug::trace()
-                    .record("WINDOWS_MOUSE_UP", "preview WM_LBUTTONUP received");
-            }
             if msg == WM_LBUTTONDOWN {
                 let _ = SetFocus(Some(hwnd));
                 SetCapture(hwnd);
             }
             if let Ok(parent) = GetParent(hwnd) {
-                let posted = PostMessageW(Some(parent), WM_APP + msg, wparam, lparam);
-                if touch_probe && matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONUP) {
-                    crate::touch_debug::trace().record(
-                        "UI_MESSAGE_FORWARD",
-                        format!("message={msg:#X}; {posted:?}"),
-                    );
-                }
-            } else if touch_probe && matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONUP) {
-                crate::touch_debug::trace()
-                    .record("UI_MESSAGE_STOPPED", "Preview has no parent window");
+                let _ = PostMessageW(Some(parent), WM_APP + msg, wparam, lparam);
             }
             return LRESULT(0);
         }
@@ -976,12 +938,7 @@ fn mapped_checked(state: &Ui, p: Point) -> Result<Point, String> {
             state.snapshot.status.state
         ));
     }
-    let size = if state.input_snapshot.mode == 3 {
-        Size {
-            width: 10000.0,
-            height: 10000.0,
-        }
-    } else if state.input_snapshot.mode == 2 {
+    let size = if state.input_snapshot.mode == 2 {
         state
             .input_snapshot
             .geometry
@@ -1083,53 +1040,6 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
             let _ = ReleaseCapture();
             return;
         }
-        if msg == WM_LBUTTONDOWN
-            && (state.input_snapshot.mode == 3 || crate::touch_debug::enabled())
-        {
-            let trace = crate::touch_debug::trace();
-            if !crate::touch_debug::enabled() {
-                trace.begin(format!("parent received DOWN at ({},{})", p.x, p.y));
-            }
-            let d = &state.input_snapshot.ble;
-            let blockers = d.touch_blockers();
-            trace.record(
-                "UI_DOWN_RECEIVED",
-                format!(
-                    "input mode={}; current profile={:?}",
-                    state.input_snapshot.mode, d.profile
-                ),
-            );
-            trace.record(
-                "TOUCH_READY",
-                format!("{}; exact reasons={blockers:?}", d.touch_ready()),
-            );
-            trace.record(
-                "SELECTED_DIGITIZER_SUBSCRIBER",
-                format!(
-                    "{:?}; active digitizer subscribers={:?}",
-                    d.selected_target, d.touch_subscribers
-                ),
-            );
-            trace.record("REPORT_MAP_VALIDATION",format!("standalone WinBleTouch d80d659 report ID 1; selected client successful read={}; readers={:?}; this validates discovery, not iOS touch interpretation",d.selected_target.as_ref().is_some_and(|id|d.enumeration.report_map_readers.contains(id)),d.enumeration.report_map_readers));
-            trace.record("VIEWPORT_COORDINATES", format!("client physical pixels=({:.3},{:.3}); stream={}x{}; capture state={}; display rotation={} quarter-turns; fit={}",p.x,p.y,state.snapshot.status.width,state.snapshot.status.height,state.snapshot.status.state,state.rotation,!state.config.one_to_one));
-            if state.input_snapshot.mode != 3 || !blockers.is_empty() {
-                trace.record(
-                    "DOWN_REJECTED_BEFORE_MAPPING",
-                    format!(
-                        "mode={}; {}",
-                        state.input_snapshot.mode,
-                        blockers.join("; ")
-                    ),
-                );
-                label(
-                    state.input_info,
-                    "Direct touch blocked — see Advanced Diagnostics for exact reasons.",
-                );
-                release_input(state);
-                let _ = ReleaseCapture();
-                return;
-            }
-        }
         if msg == WM_LBUTTONDOWN {
             let mapping = mapped_checked(state, p);
             if let Ok(point) = mapping {
@@ -1140,52 +1050,13 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                 }
                 if state.input_snapshot.mode == 1 {
                     state.input.send(InputCommand::Mouse(1, 0, 0, 0));
-                } else if state.input_snapshot.mode == 3 {
-                    crate::touch_debug::trace().record(
-                        "MAPPED_COORDINATES",
-                        format!(
-                            "absolute HID extent 0..10000: ({:.6},{:.6})",
-                            point.x, point.y
-                        ),
-                    );
-                    crate::touch_debug::trace().record(
-                        "NORMALIZED_HID_X_Y",
-                        format!(
-                            "normalized=({:.6},{:.6}); integer X={}, Y={}",
-                            point.x / 10000.0,
-                            point.y / 10000.0,
-                            point.x.round() as i32,
-                            point.y.round() as i32
-                        ),
-                    );
-                    state.input.send(InputCommand::TouchContact(
-                        point.x.round() as i32,
-                        point.y.round() as i32,
-                    ));
                 }
             } else {
-                if state.input_snapshot.mode == 3 || crate::touch_debug::enabled() {
-                    crate::touch_debug::trace().record(
-                        "MAPPING_REJECTED",
-                        format!(
-                            "{}; no DOWN queued",
-                            mapping
-                                .err()
-                                .unwrap_or_else(|| "Unknown mapping failure".into())
-                        ),
-                    );
-                    label(
-                        state.input_info,
-                        "Direct touch mapping rejected — see Advanced Diagnostics.",
-                    );
-                }
                 release_input(state);
                 let _ = ReleaseCapture();
             }
         } else if msg == WM_LBUTTONUP {
-            if state.input_snapshot.mode == 3 {
-                state.input.send(InputCommand::TouchRelease);
-            } else if state.input_snapshot.mode == 2 {
+            if state.input_snapshot.mode == 2 {
                 if let Some(action) = state.gesture.release(mapped(state, p), Instant::now()) {
                     state.input.send(InputCommand::Action(action));
                 }
@@ -1193,24 +1064,6 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                 state.input.send(InputCommand::Mouse(0, 0, 0, 0));
             }
             let _ = ReleaseCapture();
-        } else if msg == WM_MOUSEMOVE
-            && state.captured
-            && state.input_snapshot.mode == 3
-            && wparam.0 & 1 != 0
-        {
-            // This explicitly requested probe tests one click, never drag motion.
-            if crate::touch_debug::enabled() {
-                return;
-            }
-            if let Some(point) = mapped(state, p) {
-                state.input.send(InputCommand::TouchContact(
-                    point.x.round() as i32,
-                    point.y.round() as i32,
-                ));
-            } else {
-                release_input(state);
-                let _ = ReleaseCapture();
-            }
         } else if msg == WM_MOUSEMOVE && state.captured && state.input_snapshot.mode == 1 {
             if mapped(state, p).is_none() {
                 release_input(state);
@@ -1269,7 +1122,7 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
             }
         } else if (msg == WM_KEYDOWN || msg == WM_KEYUP)
             && state.captured
-            && matches!(state.input_snapshot.mode, 1 | 3)
+            && state.input_snapshot.mode == 1
         {
             if let Some(key) = hid_key(wparam.0) {
                 if msg == WM_KEYDOWN && !state.keys.contains(&key) {

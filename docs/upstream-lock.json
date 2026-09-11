@@ -64,11 +64,5 @@
     "url": "https://github.com/abhishek-raj/windows-ble-hid.git",
     "commit": "9a4f45129779ec3bef368ea4ffcdcde795a57b65",
     "last_commit": "2026-09-03T15:32:49+05:30 Return input locally when host disconnects"
-  },
-  {
-    "name": "WinBleTouch",
-    "url": "https://github.com/sakx7/WinBleTouch.git",
-    "commit": "d80d659af53188c45d3d2966f86ec35c0849287f",
-    "last_commit": "2026-09-09T22:52:56+01:00 fix: report BLE HID contacts as fingers for iOS edge gestures"
   }
 ]

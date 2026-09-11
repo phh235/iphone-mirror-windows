@@ -1,5 +1,5 @@
 //! Observable HID enumeration and connection events. No input capture or media code.
-use super::{BluetoothError, Bounded, HidProfile, buffer, characteristic};
+use super::{BluetoothError, Bounded, buffer, characteristic};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -37,7 +37,6 @@ pub struct Observation {
     pub report_map_readers: Vec<String>,
     pub mouse_subscription_events: u64,
     pub keyboard_subscription_events: u64,
-    pub touch_subscription_events: u64,
     pub gatt_sessions: BTreeMap<String, String>,
     pub connected_le: BTreeMap<String, Peer>,
     pub connected_classic: BTreeMap<String, Peer>,
@@ -54,7 +53,6 @@ impl Default for Observation {
             report_map_readers: Vec::new(),
             mouse_subscription_events: 0,
             keyboard_subscription_events: 0,
-            touch_subscription_events: 0,
             gatt_sessions: BTreeMap::new(),
             connected_le: BTreeMap::new(),
             connected_classic: BTreeMap::new(),
@@ -154,12 +152,7 @@ impl Trace {
         }
         Ok(())
     }
-    pub fn touch_discovery_confirmed(&self, target: &str) -> bool {
-        let state = self.0.observation.lock().unwrap_or_else(|e| e.into_inner());
-        state.protocol_mode == 1
-            && !state.suspended
-            && state.report_map_readers.iter().any(|id| id == target)
-    }
+
     pub fn read(&self, name: &str, offset: u32, reader: Option<String>) {
         let mut state = self.0.observation.lock().unwrap_or_else(|e| e.into_inner());
         if name == "Report Map 0x2A4B"
@@ -177,7 +170,6 @@ impl Trace {
         &self,
         report_id: u8,
         characteristic: &GattLocalCharacteristic,
-        profile: HidProfile,
     ) -> windows::core::Result<()> {
         let mut ids = Vec::new();
         for client in characteristic.SubscribedClients()? {
@@ -188,9 +180,7 @@ impl Trace {
             }
         }
         let mut state = self.0.observation.lock().unwrap_or_else(|e| e.into_inner());
-        let count = if profile == HidProfile::DirectTouch {
-            &mut state.touch_subscription_events
-        } else if report_id == 2 {
+        let count = if report_id == 2 {
             &mut state.mouse_subscription_events
         } else {
             &mut state.keyboard_subscription_events
@@ -248,7 +238,6 @@ pub(crate) fn install_read(
 #[derive(Clone, Copy)]
 pub(crate) enum WriteKind {
     None,
-    ReadOnly,
     ControlPoint,
     ProtocolMode,
 }
@@ -271,10 +260,8 @@ impl Metadata {
         initial: &[u8],
         kind: WriteKind,
         trace: Trace,
-        encrypted: bool,
     ) -> Result<Self, BluetoothError> {
         let properties = match kind {
-            WriteKind::ReadOnly => GattCharacteristicProperties::Read,
             WriteKind::None => {
                 if id == 0x2a19 {
                     GattCharacteristicProperties::Read | GattCharacteristicProperties::Notify
@@ -288,7 +275,7 @@ impl Metadata {
                     | GattCharacteristicProperties::WriteWithoutResponse
             }
         };
-        let encrypted = encrypted && id != 0x2a19;
+        let encrypted = id != 0x2a19;
         let characteristic = characteristic(service, id, properties, None, encrypted)?;
         let mut metadata = Self {
             characteristic,
@@ -304,7 +291,7 @@ impl Metadata {
                 trace.clone(),
             )?);
         }
-        if !matches!(kind, WriteKind::None | WriteKind::ReadOnly) {
+        if !matches!(kind, WriteKind::None) {
             let event_trace = trace.clone();
             metadata.write_token = Some(metadata.characteristic.WriteRequested(
                 &TypedEventHandler::<GattLocalCharacteristic, GattWriteRequestedEventArgs>::new(
@@ -342,7 +329,7 @@ impl Metadata {
                                 match kind {
                                     WriteKind::ProtocolMode => state.protocol_mode = command,
                                     WriteKind::ControlPoint => state.suspended = command == 0,
-                                    WriteKind::None | WriteKind::ReadOnly => {}
+                                    WriteKind::None => {}
                                 }
                                 state.event(format!("WriteRequested: {name} = {command}"));
                             } else {

@@ -260,37 +260,7 @@ impl BlePanel {
             d.keyboard_subscribers.join("\r\n")
         };
         let observations = &d.enumeration;
-        let pointer_clients = if d.profile == imirror_input_ble::HidProfile::DirectTouch {
-            &d.touch_subscribers
-        } else {
-            &d.mouse_subscribers
-        };
-        let direct_status = format!(
-            "Control mode: {}\r\nActive touch subscribers: {} | touch link ready: {}\r\nTouch subscription callbacks: {}\r\nDirect touch setup: iPhone Accessibility > Zoom ON, Full Screen, 1x, Controller OFF.\r\nSwitching HID profiles requires fresh Report Map discovery; forget/re-pair if cached.",
-            d.profile.label(),
-            d.touch_subscribers.len(),
-            d.touch_ready(),
-            observations.touch_subscription_events
-        );
-        let touch_detail = if crate::touch_debug::enabled()
-            || d.profile == imirror_input_ble::HidProfile::DirectTouch
-        {
-            format!(
-                "Advanced Direct Touch diagnostics — NOT a hardware PASS\r\nBuild: {}\r\nTrace archive: {}\r\nCurrent touch_ready(): {}\r\nCurrent blockers: {:?}\r\nSelected digitizer subscriber: {}\r\nStandalone Report Map ID 1; keyboard report absent in this profile.\r\n\r\n{}\r\n\r\n",
-                crate::touch_debug::BUILD_ID,
-                crate::touch_debug::archive_path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(
-                        || "enable --direct-touch-one-click for per-process archive".into()
-                    ),
-                d.touch_ready(),
-                d.touch_blockers(),
-                selected,
-                crate::touch_debug::trace().snapshot().text()
-            )
-        } else {
-            String::new()
-        };
+        let pointer_clients = &d.mouse_subscribers;
         let events = observations
             .events
             .iter()
@@ -336,7 +306,7 @@ impl BlePanel {
             .as_deref()
             .unwrap_or("Speed preference is saved automatically.");
         let text = format!(
-            "{touch_detail}{direct_status}\r\n\r\nMouse speed: {percent}% (relative mouse only)\r\n{settings_notice}\r\n\r\n{adapter}\r\n\r\nHID service 0x1812 created: {}\r\nAdvertising status: {}\r\nSTARTED observed: {} | startup timeout: {} | error: {:?}\r\n\r\nActive mouse report subscribers: {}\r\n{mouse}\r\nActive keyboard report subscribers: {}\r\n{keyboard}\r\n\r\nSelected target subscriber: {selected}\r\nMouse report ready: {} | keyboard report ready: {}\r\n\r\n{}\r\nError: {}\r\nLast diagnostic: {}\r\n\r\nThis milestone requires a real report subscription. {probe_note}\r\nLocal diagnostics: {}{enumeration}",
+            "Mouse speed: {percent}% (relative mouse only)\r\n{settings_notice}\r\n\r\n{adapter}\r\n\r\nHID service 0x1812 created: {}\r\nAdvertising status: {}\r\nSTARTED observed: {} | startup timeout: {} | error: {:?}\r\n\r\nActive mouse report subscribers: {}\r\n{mouse}\r\nActive keyboard report subscribers: {}\r\n{keyboard}\r\n\r\nSelected target subscriber: {selected}\r\nMouse report ready: {} | keyboard report ready: {}\r\n\r\n{}\r\nError: {}\r\nLast diagnostic: {}\r\n\r\nThis milestone requires a real report subscription. {probe_note}\r\nLocal diagnostics: {}{enumeration}",
             yes(d.hid_service_created),
             d.advertising_status,
             yes(d.started_observed),
@@ -355,10 +325,7 @@ impl BlePanel {
         );
         // SAFETY: HWNDs are retained by this panel; Win32 copies strings synchronously.
         unsafe {
-            let _ = EnableWindow(
-                self.speed,
-                d.profile != imirror_input_ble::HidProfile::DirectTouch,
-            );
+            let _ = EnableWindow(self.speed, true);
             if GetCapture() != self.speed {
                 SendMessageW(
                     self.speed,

@@ -408,3 +408,22 @@ establishes where the report was ignored. This is not proof that every iOS devic
 rejects absolute HID. The actual point was not the requested center and its UI
 target was not independently inspected. No second touch was sent. DirectTouch
 remains experimental and excluded from normal/automatic control.
+
+## 2026-09-11 - Native UI / low-latency control milestone begins
+
+User authorized UI replacement, Raw Input control optimization and packaging,
+while freezing the working media pipeline. Snapshot commit 78f713c and rollback
+ tag rollback/pre-native-ui-raw-input-20260911 preserve the entire previous state.
+Working branch: work/native-ui-raw-input. Frozen hashes cover 198 media files.
+Direct Touch is removed from production source, command-line paths, state,
+normal documentation and license inventory. Its implementation remains in the
+rollback tag. Shared relative BLE service/report descriptors and encrypted
+metadata are retained. Strict Clippy passes without any lint allow override;
+the authorized benchmark change uses is_multiple_of(5), preserving the exact
+sampling schedule.
+
+Two baseline attempts saw no USB phone. After user reconnection, the unchanged
+release captured/rendered for 30.056 seconds: 1180x2556, 56.5880 source FPS,
+56.4474 submitted FPS, hardware decoder; 1,611 received and 1,606 submitted frames.
+The run overlapped compilation and is labeled accordingly. Raw evidence is in
+work/native-ui-milestone/mirror-before-connected.json and companion samples.

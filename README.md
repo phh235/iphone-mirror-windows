@@ -55,20 +55,6 @@ Changes apply immediately and are saved automatically. 100% restores the previou
 unscaled motion. This affects physical mouse movement; diagnostic button steps
 remain fixed. iOS tracking acceleration can still differ from Windows.
 
-Direct touch is experimental and removed from the normal toolbar. **Physical
-test: FAIL** — the user enabled it and clicked the mirrored image, with no response
-on the phone. No successful absolute-touch test has been recorded. It must not be
-selected automatically. The explicit `--ble-direct-touch` diagnostic opt-in
-remains available for future investigation; it uses real BLE HID digitizer reports,
-not WDA. Its upstream setup assumes iPhone Accessibility > Zoom enabled at Full
-Screen / 1x with the Zoom Controller off and fresh pairing after report-map changes.
-Those prerequisites do not establish compatibility with this phone. A focused
-`--direct-touch-one-click` diagnostic now uses the pinned standalone digitizer
-and records the complete click/queue/GATT path; its physical test is pending.
-See [one-click debugging](docs/DIRECT_TOUCH_DEBUG.md) and
-[validation](docs/VALIDATION.md). Relative mouse mode can trigger iOS pointer
-lift/highlight effects; iMirror has no custom hover-scaling effect.
-
 Audio is disabled: no Mute control, USB PCM playback worker, or AirPlay audio
 receiver pipeline. USB protocol liveness handling is retained.
 

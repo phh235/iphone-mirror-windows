@@ -1,8 +1,6 @@
 //! WinRT HID-over-GATT. Report design adapted from MIT windows-ble-hid.
 //! Copyright (c) 2026 Abhishek Raj; upstream notice is in vendor/licenses.
 mod enumeration;
-mod touch;
-mod touch_debug;
 use enumeration::{Connections, Metadata, Trace, WriteKind, install_read};
 pub use enumeration::{Event, Observation, Peer};
 use serde::Serialize;
@@ -10,7 +8,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-pub use touch_debug::{TouchTrace, TouchTraceSnapshot, report_hex};
 use windows::{
     Devices::Bluetooth::{
         BluetoothAdapter, BluetoothError as WinBluetoothError, GenericAttributeProfile::*,
@@ -20,21 +17,6 @@ use windows::{
     Storage::Streams::IBuffer,
     core::GUID,
 };
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub enum HidProfile {
-    #[default]
-    RelativeMouse,
-    DirectTouch,
-}
-impl HidProfile {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::RelativeMouse => "Relative mouse",
-            Self::DirectTouch => "Direct touch",
-        }
-    }
-}
 
 const REPORT_MAP: &[u8] = &[
     0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00,
@@ -66,14 +48,6 @@ pub enum BluetoothError {
     Disconnected,
     #[error("The selected target has not subscribed to the keyboard report.")]
     NoKeyboardSubscriber,
-    #[error("This input action is unavailable in the selected BLE profile.")]
-    WrongProfile,
-    #[error(
-        "Direct touch needs fresh HID discovery. Forget this PC and pair again after enabling Zoom at 1x."
-    )]
-    TouchSetupRequired,
-    #[error("Direct touch notification failed: {0}")]
-    TouchNotification(String),
 }
 fn bluetooth_error_name(code: i32) -> &'static str {
     match code {
@@ -135,9 +109,6 @@ pub fn capability() -> Result<Capability, BluetoothError> {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Diagnostics {
     pub adapter: Option<Capability>,
-    pub profile: HidProfile,
-    pub touch_subscribers: Vec<String>,
-    pub touch_contact_active: bool,
     pub hid_service_created: bool,
     pub advertising_status: String,
     pub advertising_error: Option<i32>,
@@ -154,81 +125,24 @@ pub struct Diagnostics {
     pub cccd_support: String,
 }
 impl Diagnostics {
-    pub fn touch_blockers(&self) -> Vec<String> {
-        let mut reasons = Vec::new();
-        if self.profile != HidProfile::DirectTouch {
-            reasons.push(format!("Profile is {:?}, not DirectTouch", self.profile));
-        }
-        if !self.hid_service_created {
-            reasons.push("HID service 0x1812 has not been created".into());
-        }
-        if !self.started_observed {
-            reasons.push(format!(
-                "Advertising STARTED has not been observed (current={})",
-                self.advertising_status
-            ));
-        }
-        if self.enumeration.protocol_mode != 1 {
-            reasons.push(format!(
-                "Protocol Mode={} (requires Report mode 1)",
-                self.enumeration.protocol_mode
-            ));
-        }
-        if self.enumeration.suspended {
-            reasons.push("Host suspended HID through Control Point".into());
-        }
-        if self.touch_subscribers.is_empty() {
-            reasons.push(format!(
-                "No active digitizer subscriber (Windows cached report subscriptions={})",
-                self.stored_mouse_subscriptions
-            ));
-        }
-        if let Some(target) = &self.selected_target {
-            if !self.touch_subscribers.contains(target) {
-                reasons.push("Selected target is not an active digitizer report subscriber".into());
-            }
-            if !self.enumeration.report_map_readers.contains(target) {
-                reasons.push("Selected target has not successfully read this process's Report Map; cached descriptor is not validation".into());
-            }
-        } else {
-            reasons.push("No digitizer subscriber selected".into());
-        }
-        reasons
-    }
-    pub fn pointer_ready(&self) -> bool {
-        let clients = if self.profile == HidProfile::DirectTouch {
-            &self.touch_subscribers
-        } else {
-            &self.mouse_subscribers
-        };
+    pub fn mouse_ready(&self) -> bool {
         self.started_observed
             && self.enumeration.protocol_mode == 1
             && !self.enumeration.suspended
-            && self.selected_target.as_ref().is_some_and(|target| {
-                clients.contains(target)
-                    && (self.profile != HidProfile::DirectTouch
-                        || self.enumeration.report_map_readers.contains(target))
-            })
-    }
-    pub fn mouse_ready(&self) -> bool {
-        self.profile == HidProfile::RelativeMouse && self.pointer_ready()
-    }
-    pub fn touch_ready(&self) -> bool {
-        self.touch_blockers().is_empty()
+            && self
+                .selected_target
+                .as_ref()
+                .is_some_and(|target| self.mouse_subscribers.contains(target))
     }
     pub fn keyboard_ready(&self) -> bool {
-        self.pointer_ready()
+        self.mouse_ready()
             && self
                 .selected_target
                 .as_ref()
                 .is_some_and(|target| self.keyboard_subscribers.contains(target))
     }
     pub fn guidance(&self) -> &'static str {
-        if self.touch_ready() {
-            "Touch report subscribed. Enable iPhone Zoom at Full Screen / 1x, then click the mirrored image to validate exact placement."
-        } else if self.profile == HidProfile::DirectTouch && self.advertising_status == "STARTED" {
-            "Direct touch advertised. Enable Zoom at 1x on iPhone and re-pair after changing profile; waiting for touch subscription."
-        } else if self.mouse_ready() {
+        if self.mouse_ready() {
             "Mouse report subscriber selected. Use Move Right; phone movement is not yet confirmed."
         } else if self.advertising_status == "STARTED" {
             if self.mouse_subscribers.is_empty() {
@@ -341,85 +255,11 @@ struct Report {
     subscription_token: i64,
 }
 impl Report {
-    fn send_touch(
-        &self,
-        target: &str,
-        bytes: &[u8],
-        phase: &str,
-        trace: Option<&TouchTrace>,
-    ) -> Result<(), BluetoothError> {
-        let note = |stage: &str, detail: String| {
-            if let Some(trace) = trace {
-                trace.record(&format!("{phase}_{stage}"), detail);
-            }
-        };
-        note(
-            "REPORT_BYTES",
-            format!(
-                "{} ({} bytes; report ID in 0x2908, not payload)",
-                report_hex(bytes),
-                bytes.len()
-            ),
-        );
-        note("SUBSCRIBER", target.into());
-        let delivery = (|| -> Result<(), BluetoothError> {
-            *self.value.lock().unwrap_or_else(|e| e.into_inner()) = bytes.to_vec();
-            for client in self.characteristic.SubscribedClients()? {
-                let session = client.Session()?;
-                if session.DeviceId()?.Id()? != target {
-                    continue;
-                }
-                let state = session.SessionStatus()?;
-                note("SESSION", format!("{state:?}"));
-                if state != GattSessionStatus::Active {
-                    return Err(BluetoothError::Disconnected);
-                }
-                let payload = buffer(bytes)?;
-                note(
-                    "GATT_BEGIN",
-                    "Calling NotifyValueForSubscribedClientAsync on selected digitizer client"
-                        .into(),
-                );
-                let result = self
-                    .characteristic
-                    .NotifyValueForSubscribedClientAsync(&payload, &client)?
-                    .bounded()?;
-                let status = result.Status()?;
-                note(
-                    "GATT_STATUS",
-                    format!("{status:?} ({}); reading BytesSent next", status.0),
-                );
-                let bytes_sent = result.BytesSent()?;
-                let protocol_error = result.ProtocolError().and_then(|value| value.Value()).ok();
-                let detail = format!(
-                    "status={status:?} ({}); BytesSent={bytes_sent}/{}; ProtocolError={protocol_error:?}; iOS touch interpretation remains unconfirmed",
-                    status.0,
-                    bytes.len()
-                );
-                note("GATT_RESULT", detail.clone());
-                if !touch_notification_complete(status.0, bytes_sent, bytes.len()) {
-                    return Err(BluetoothError::TouchNotification(detail));
-                }
-                return Ok(());
-            }
-            Err(BluetoothError::Disconnected)
-        })();
-        if let Err(error) = &delivery {
-            note(
-                "DELIVERY_FAILED",
-                format!(
-                    "{error}; no automatic DOWN retry; inspect GATT_BEGIN/RESULT to distinguish preflight from delivery failure"
-                ),
-            );
-        }
-        delivery
-    }
     fn new(
         service: &GattLocalService,
         id: u8,
         size: usize,
         trace: Trace,
-        profile: HidProfile,
     ) -> Result<Self, BluetoothError> {
         let characteristic = characteristic(
             service,
@@ -428,17 +268,11 @@ impl Report {
             None,
             true,
         )?;
-        let mut initial = vec![0; size];
-        if profile == HidProfile::DirectTouch
-            && let Some(first) = initial.first_mut()
-        {
-            *first = 2;
-        }
-        let value = Arc::new(Mutex::new(initial));
-        let name = match (id, profile) {
-            (_, HidProfile::DirectTouch) => "Touch Input Report 0x2A4D",
-            (2, _) => "Mouse Input Report 0x2A4D",
-            _ => "Keyboard Input Report 0x2A4D",
+        let value = Arc::new(Mutex::new(vec![0; size]));
+        let name = if id == 2 {
+            "Mouse Input Report 0x2A4D"
+        } else {
+            "Keyboard Input Report 0x2A4D"
         };
         let read_token = install_read(&characteristic, value.clone(), name, trace.clone())?;
         let event_trace = trace.clone();
@@ -448,7 +282,7 @@ impl Report {
                 windows::core::IInspectable,
             >::new(move |sender, _| {
                 if let Some(sender) = sender.as_ref()
-                    && let Err(error) = event_trace.subscribers(id, sender, profile)
+                    && let Err(error) = event_trace.subscribers(id, sender)
                 {
                     event_trace.note(format!("Subscription observation failed: {error}"));
                 }
@@ -500,9 +334,6 @@ impl Report {
         Err(BluetoothError::Disconnected)
     }
 }
-fn touch_notification_complete(status: i32, bytes_sent: u16, expected: usize) -> bool {
-    status == GattCommunicationStatus::Success.0 && usize::from(bytes_sent) == expected
-}
 impl Drop for Report {
     fn drop(&mut self) {
         let _ = self.characteristic.RemoveReadRequested(self.read_token);
@@ -516,11 +347,8 @@ impl Drop for Report {
 pub struct HidPeripheral {
     provider: GattServiceProvider,
     battery: GattServiceProvider,
-    keyboard: Option<Report>,
-    pointer: Report,
-    profile: HidProfile,
-    touch_position: Option<(i32, i32)>,
-    touch_debug: Option<TouchTrace>,
+    keyboard: Report,
+    mouse: Report,
     target: Option<String>,
     _metadata: Vec<Metadata>,
     _connections: Connections,
@@ -532,16 +360,7 @@ pub struct HidPeripheral {
 }
 impl HidPeripheral {
     pub fn start(diagnostics: &mut Diagnostics) -> Result<Self, BluetoothError> {
-        Self::start_profile(diagnostics, HidProfile::RelativeMouse)
-    }
-    pub fn start_profile(
-        diagnostics: &mut Diagnostics,
-        profile: HidProfile,
-    ) -> Result<Self, BluetoothError> {
-        *diagnostics = Diagnostics {
-            profile,
-            ..Diagnostics::default()
-        };
+        *diagnostics = Diagnostics::default();
         diagnostics.advertising_status = "NOT_REQUESTED".into();
         let caps = capability()?;
         diagnostics.adapter = Some(caps.clone());
@@ -557,42 +376,26 @@ impl HidPeripheral {
         diagnostics.advertising_status = "CREATED".into();
         let service = provider.Service()?;
         let trace = Trace::default();
-        trace.note(if profile == HidProfile::DirectTouch {
-            "Created HID service 0x1812; standalone WinBleTouch d80d659 digitizer, Report ID 1"
-        } else {
-            "Created HID service 0x1812; matching windows-ble-hid 9a4f451 characteristic order"
-        });
-        // Direct profile matches pinned WinBleTouch's standalone digitizer, report ID 1.
-        // The relative mouse/keyboard profile is unchanged.
-        let map = if profile == HidProfile::DirectTouch {
-            touch::report_map()
-        } else {
-            REPORT_MAP.to_vec()
-        };
-        let info = if profile == HidProfile::DirectTouch {
-            [0x11, 0x01, 0, 1]
-        } else {
-            [0x11, 0x01, 0, 3]
-        };
-        let encrypted_metadata = profile == HidProfile::RelativeMouse;
+        trace.note(
+            "Created HID service 0x1812; matching windows-ble-hid 9a4f451 characteristic order",
+        );
+        // Match upstream order and retain handlers for every readable/writable characteristic.
         let mut metadata = vec![
             Metadata::new(
                 &service,
                 0x2a4a,
                 "HID Information 0x2A4A",
-                &info,
+                &[0x11, 0x01, 0, 3],
                 WriteKind::None,
                 trace.clone(),
-                encrypted_metadata,
             )?,
             Metadata::new(
                 &service,
                 0x2a4b,
                 "Report Map 0x2A4B",
-                &map,
+                REPORT_MAP,
                 WriteKind::None,
                 trace.clone(),
-                encrypted_metadata,
             )?,
             Metadata::new(
                 &service,
@@ -601,7 +404,6 @@ impl HidPeripheral {
                 &[],
                 WriteKind::ControlPoint,
                 trace.clone(),
-                encrypted_metadata,
             )?,
             Metadata::new(
                 &service,
@@ -610,20 +412,10 @@ impl HidPeripheral {
                 &[1],
                 WriteKind::ProtocolMode,
                 trace.clone(),
-                encrypted_metadata,
             )?,
         ];
-        let keyboard = if profile == HidProfile::RelativeMouse {
-            Some(Report::new(&service, 1, 8, trace.clone(), profile)?)
-        } else {
-            None
-        };
-        let pointer_id = if profile == HidProfile::DirectTouch {
-            1
-        } else {
-            2
-        };
-        let pointer = Report::new(&service, pointer_id, 6, trace.clone(), profile)?;
+        let keyboard = Report::new(&service, 1, 8, trace.clone())?;
+        let mouse = Report::new(&service, 2, 6, trace.clone())?;
         let battery_result = GattServiceProvider::CreateAsync(uuid(0x180f))?.bounded()?;
         if battery_result.Error()? != WinBluetoothError::Success {
             return Err(BluetoothError::Registration(battery_result.Error()?.0));
@@ -634,13 +426,8 @@ impl HidPeripheral {
             0x2a19,
             "Battery Level 0x2A19",
             &[100],
-            if profile == HidProfile::DirectTouch {
-                WriteKind::ReadOnly
-            } else {
-                WriteKind::None
-            },
+            WriteKind::None,
             trace.clone(),
-            false,
         )?);
         let connections = Connections::start(trace.clone());
         let advertisement = Arc::new(Mutex::new(Advertisement::default()));
@@ -671,10 +458,7 @@ impl HidPeripheral {
             provider,
             battery,
             keyboard,
-            pointer,
-            profile,
-            touch_position: None,
-            touch_debug: None,
+            mouse,
             target: None,
             _metadata: metadata,
             _connections: connections,
@@ -685,19 +469,6 @@ impl HidPeripheral {
             adapter: caps,
         };
         let parameters = GattServiceProviderAdvertisingParameters::new()?;
-        if profile == HidProfile::DirectTouch {
-            let battery_parameters = GattServiceProviderAdvertisingParameters::new()?;
-            battery_parameters.SetIsConnectable(false)?;
-            battery_parameters.SetIsDiscoverable(false)?;
-            if let Err(error) = peripheral
-                .battery
-                .StartAdvertisingWithParameters(&battery_parameters)
-            {
-                peripheral
-                    .trace
-                    .note(format!("Optional battery advertising failed: {error}"));
-            }
-        }
         parameters.SetIsConnectable(true)?;
         parameters.SetIsDiscoverable(true)?;
         peripheral
@@ -718,8 +489,6 @@ impl HidPeripheral {
         }
         let mut result = Diagnostics {
             adapter: Some(self.adapter.clone()),
-            profile:self.profile,
-            touch_contact_active:self.touch_position.is_some(),
             hid_service_created: true,
             advertising_status: advertisement_name(status),
             advertising_error: observed.error,
@@ -729,29 +498,23 @@ impl HidPeripheral {
             selected_target: self.target.clone(),
             enumeration: self.trace.snapshot(),
             gap_appearance: "Windows-managed GAP; public GATT APIs cannot override Appearance (same limitation as reference)".into(),
-            cccd_support: if self.profile==HidProfile::DirectTouch {"0x2902 auto-generated for standalone digitizer Read|Notify report ID 1"}else{"0x2902 auto-generated by Windows for both Read|Notify input reports"}.into(),
+            cccd_support: "0x2902 auto-generated by Windows for both Read|Notify input reports".into(),
             ..Diagnostics::default()
         };
         drop(observed);
-        if self.profile == HidProfile::DirectTouch {
-            result.touch_subscribers = self.clients()?;
-        } else {
-            result.mouse_subscribers = self.clients()?;
-        }
+        result.mouse_subscribers = self.clients()?;
         result.stored_mouse_subscriptions =
-            self.pointer.characteristic.SubscribedClients()?.Size()?;
-        if let Some(keyboard) = &self.keyboard {
-            result.stored_keyboard_subscriptions =
-                keyboard.characteristic.SubscribedClients()?.Size()?;
-            for client in keyboard.characteristic.SubscribedClients()? {
-                let session = client.Session()?;
-                if session.SessionStatus()? != GattSessionStatus::Active {
-                    continue;
-                }
-                let id = session.DeviceId()?.Id()?.to_string();
-                if !result.keyboard_subscribers.contains(&id) {
-                    result.keyboard_subscribers.push(id);
-                }
+            self.mouse.characteristic.SubscribedClients()?.Size()?;
+        result.stored_keyboard_subscriptions =
+            self.keyboard.characteristic.SubscribedClients()?.Size()?;
+        for client in self.keyboard.characteristic.SubscribedClients()? {
+            let session = client.Session()?;
+            if session.SessionStatus()? != GattSessionStatus::Active {
+                continue;
+            }
+            let id = session.DeviceId()?.Id()?.to_string();
+            if !result.keyboard_subscribers.contains(&id) {
+                result.keyboard_subscribers.push(id);
             }
         }
         result.mouse_subscribers.sort();
@@ -760,11 +523,7 @@ impl HidPeripheral {
     }
     pub fn diagnostic_action(&mut self, action: DiagnosticAction) -> Result<(), BluetoothError> {
         let state = self.diagnostics()?;
-        if matches!(action, DiagnosticAction::TypeA) {
-            if !state.keyboard_ready() {
-                return Err(BluetoothError::NoKeyboardSubscriber);
-            }
-        } else if !state.mouse_ready() {
+        if !state.mouse_ready() {
             return Err(BluetoothError::NoTarget);
         }
         match action {
@@ -789,7 +548,7 @@ impl HidPeripheral {
     }
     pub fn clients(&self) -> Result<Vec<String>, BluetoothError> {
         let mut result = Vec::new();
-        for client in self.pointer.characteristic.SubscribedClients()? {
+        for client in self.mouse.characteristic.SubscribedClients()? {
             let session = client.Session()?;
             if session.SessionStatus()? != GattSessionStatus::Active {
                 continue;
@@ -810,10 +569,8 @@ impl HidPeripheral {
             return Err(BluetoothError::NoTarget);
         }
         self.target = Some(id.to_owned());
-        self.trace.note(format!(
-            "Selected actual {} subscriber: {id}",
-            self.profile.label()
-        ));
+        self.trace
+            .note(format!("Selected actual mouse report subscriber: {id}"));
         Ok(())
     }
     pub fn mouse(
@@ -823,79 +580,19 @@ impl HidPeripheral {
         dy: i32,
         wheel: i32,
     ) -> Result<(), BluetoothError> {
-        if self.profile != HidProfile::RelativeMouse {
-            return Err(BluetoothError::WrongProfile);
-        }
         let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
-        self.pointer
+        self.mouse
             .send(target, &mouse_report(buttons, dx, dy, wheel))
     }
     pub fn keyboard(&mut self, modifiers: u8, keys: &[u8]) -> Result<(), BluetoothError> {
         let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
         self.keyboard
-            .as_ref()
-            .ok_or(BluetoothError::WrongProfile)?
             .send(target, &keyboard_report(modifiers, keys))
     }
-    pub fn set_touch_trace(&mut self, trace: TouchTrace) {
-        self.touch_debug = Some(trace);
-    }
-    pub fn touch_active(&self) -> bool {
-        self.touch_position.is_some()
-    }
-    pub fn touch_contact(&mut self, x: i32, y: i32) -> Result<(), BluetoothError> {
-        if self.profile != HidProfile::DirectTouch {
-            return Err(BluetoothError::WrongProfile);
-        }
-        let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
-        if !self.trace.touch_discovery_confirmed(target) {
-            return Err(BluetoothError::TouchSetupRequired);
-        }
-        let (x, y) = (x.clamp(0, 10000), y.clamp(0, 10000));
-        let first = self.touch_position.is_none();
-        self.touch_position = Some((x, y));
-        self.pointer.send_touch(
-            target,
-            &touch::report(true, x, y),
-            "DOWN",
-            self.touch_debug.as_ref(),
-        )?;
-        if first {
-            self.trace.note(format!(
-                "Touch DOWN sent at ({x},{y}); physical placement requires validation"
-            ));
-        }
-        Ok(())
-    }
-    pub fn touch_release(&mut self) -> Result<(), BluetoothError> {
-        if self.profile != HidProfile::DirectTouch {
-            return Err(BluetoothError::WrongProfile);
-        }
-        let Some((x, y)) = self.touch_position else {
-            return Ok(());
-        };
-        let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
-        self.pointer.send_touch(
-            target,
-            &touch::report(false, x, y),
-            "UP",
-            self.touch_debug.as_ref(),
-        )?;
-        self.touch_position = None;
-        self.trace.note(format!("Touch UP sent at ({x},{y})"));
-        Ok(())
-    }
     pub fn release(&mut self) {
-        if self.profile == HidProfile::DirectTouch {
-            let _ = self.touch_release();
-        }
         if let Some(target) = &self.target {
-            if self.profile == HidProfile::RelativeMouse {
-                let _ = self.pointer.send(target, &[0; 6]);
-            }
-            if let Some(keyboard) = &self.keyboard {
-                let _ = keyboard.send(target, &[0; 8]);
-            }
+            let _ = self.mouse.send(target, &[0; 6]);
+            let _ = self.keyboard.send(target, &[0; 8]);
         }
     }
 }
@@ -967,46 +664,6 @@ mod tests {
         assert!(!d.guidance().contains("Pair your iPhone"));
         d.advertising_status = "STARTED".into();
         assert!(d.guidance().contains("Waiting for iOS"));
-    }
-    #[test]
-    fn touch_profile_requires_touch_subscription_and_fresh_report_map_read() {
-        let mut d = Diagnostics {
-            profile: HidProfile::DirectTouch,
-            hid_service_created: true,
-            started_observed: true,
-            selected_target: Some("phone".into()),
-            ..Diagnostics::default()
-        };
-        d.mouse_subscribers.push("phone".into());
-        assert!(!d.pointer_ready());
-        d.touch_subscribers.push("phone".into());
-        assert!(!d.touch_ready());
-        d.enumeration.report_map_readers.push("phone".into());
-        assert!(d.touch_ready());
-        assert!(!d.mouse_ready());
-        assert!(!d.keyboard_ready());
-        d.keyboard_subscribers.push("phone".into());
-        assert!(d.keyboard_ready());
-    }
-    #[test]
-    fn notification_success_requires_all_report_bytes() {
-        assert!(touch_notification_complete(0, 6, 6));
-        assert!(!touch_notification_complete(0, 0, 6));
-        assert!(!touch_notification_complete(0, 5, 6));
-        assert!(!touch_notification_complete(1, 6, 6));
-    }
-    #[test]
-    fn missing_touch_prerequisites_have_explicit_reasons() {
-        let d = Diagnostics {
-            profile: HidProfile::DirectTouch,
-            ..Diagnostics::default()
-        };
-        let blockers = d.touch_blockers().join("; ");
-        assert!(blockers.contains("not been created"));
-        assert!(blockers.contains("STARTED has not been observed"));
-        assert!(blockers.contains("No active digitizer subscriber"));
-        assert!(blockers.contains("No digitizer subscriber selected"));
-        assert!(!d.touch_ready());
     }
     #[test]
     fn reports_match_hogp_descriptor() {
