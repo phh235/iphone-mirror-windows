@@ -123,7 +123,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 samples.pop_front();
             }
             samples.push_back(sample.clone());
-            if sample_count % 5 == 0 {
+            if sample_count.is_multiple_of(5) {
                 log.flush()?;
                 std::fs::write(&progress_path, serde_json::to_vec_pretty(&sample)?)?;
                 if let Some(preview) = &preview {
