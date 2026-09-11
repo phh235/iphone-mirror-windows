@@ -5,6 +5,7 @@ mod ble_panel;
 mod input;
 mod pointer_settings;
 mod settings;
+mod touch_debug;
 mod ui;
 mod worker;
 use imirror_native_core::Engine;

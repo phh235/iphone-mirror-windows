@@ -91,5 +91,76 @@ is not guaranteed because the operating systems may apply different acceleration
 Audio was removed from the application UI and receiver path. UxPlay video-only
 startup/shutdown passed with actual `-as 0` arguments. USB's disabled-audio branch
 was corrected to avoid starting a silent WASAPI worker; protocol/liveness handling
-was retained. Direct-touch software mapping and HID report tests passed; exact
-physical click placement remains unconfirmed and must not be reported as passed.
+was retained. Direct-touch software mapping and HID report tests passed; those
+checks do not validate physical touch delivery.
+
+## Direct touch physical failure and UI quarantine (2026-09-11)
+
+**Physical test: FAIL (user reported).** The user enabled Direct touch and clicked
+the mirrored image; the physical iPhone did nothing. No successful absolute touch
+has been validated in this project. The earlier real pointer movement PASS was
+for RelativeMouse, not DirectTouch. This is implemented experimental BLE HID code,
+not a placeholder, but it is not a working production touch feature.
+
+Read-only inspection found the running PID 22988 snapshot in work/portable-live.json
+had already returned to RelativeMouse, with zero touch subscribers and a subscriber
+unavailable error. work/direct-touch-live.json also contained RelativeMouse. Neither
+snapshot identifies the stop point of the reported DirectTouch click. No retained
+Touch DOWN/UP or Absolute touch result was found in the local JSON/log evidence.
+Diagnostics are overwritten on state changes, not a complete click trace.
+
+At the time of that failed attempt, the UI silently rejected a DirectTouch press before mapping if touch_ready() was
+false. This requires an active selected report subscriber, a fresh Report Map read,
+observed advertising STARTED, report protocol mode and no suspension. Further gates
+include the streaming viewport, the bounded input queue, fresh discovery and an
+active GATT session at notification time. Even successful Windows notification
+does not establish that iOS interpreted the report as touch. The exact stop point
+of this physical attempt is UNKNOWN; do not attribute it to iOS rejection, mapping,
+or a missing subscription without a trace from that attempt.
+
+Removed the toolbar button and its normal command handler. There is no Automatic
+control selector in the current application; Auto is video quality only. The
+existing --ble-direct-touch flag remains an explicit experimental diagnostic
+opt-in. No transport, mapping, mirroring, or input report implementation was changed.
+The existing running/portable EXE is unchanged by this source-only quarantine.
+
+## Focused DirectTouch tracing pass (2026-09-11)
+
+The user approved continued hardware debugging. Added live trace for the Windows
+DOWN/UP messages, readiness and exact blockers, selected subscriber / Report Map
+response, coordinates, queue, actual payload bytes and GATT result. Standalone
+Report ID 1 descriptor now matches pinned WinBleTouch byte-for-byte; notification
+success requires both success status and 6/6 bytes. See DIRECT_TOUCH_DEBUG.md for
+remaining documented differences and required iPhone setup.
+
+Ten BLE tests passed, including descriptor/reference, readiness blockers, partial
+notification rejection and bounded one-click trace. These are software checks.
+At that build-stage checkpoint, advertising, notification delivery and physical
+touch had not run. The subsequent hardware attempt is recorded below.
+
+Release build and read-only EXE startup check passed for
+`dist/direct-touch-debug/iMirror.exe` (build marker
+`direct-touch-one-click-20260911-01`). Verified SHA-256 differs from the old portable
+binary and matches the freshly built release output. Formatting passed; app
+release/all-targets Clippy passed with the existing unrelated benchmark
+`manual_is_multiple_of` lint exception. These checks do not establish BLE delivery.
+
+## First traced DirectTouch notification (2026-09-11)
+
+New diagnostic PID 22752 reached STARTED, fresh Report Map response and one selected
+active digitizer subscriber. The user-generated DOWN at client (352,312) mapped to
+HID (6127,3062). Both UI and worker readiness passed, and the input queue accepted
+the click. DOWN `03 00 EF 17 F6 0B` and UP `02 00 EF 17 F6 0B` each returned Windows
+GattCommunicationStatus Success, BytesSent 6/6, no protocol error. No automatic
+report was sent; additional DOWN attempts were blocked by the probe.
+
+This was not a center-screen click (normalized position about 61% across, 31%
+down). Windows GATT completion is observed. **Physical iPhone response: FAIL** —
+the user's latest explicit text says they clicked but saw no response, overriding
+the conflicting suggested-answer selection. Live video was confirmed by the user.
+Evidence is retained at work/direct-touch-debug/hardware-click-22752.json.
+Successful absolute touch remains unvalidated. No iOS-side event trace or radio
+capture is available; the exact point of failure beyond Windows notification
+completion is unknown. The clicked UI target was not independently inspected.
+This result does not establish universal iOS incompatibility. No second test was
+sent; DirectTouch remains experimental and excluded from normal/automatic control.

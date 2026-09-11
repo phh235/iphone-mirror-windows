@@ -250,3 +250,161 @@ counts were 1; USB was streaming 1180x2556 with hardware decode. Slider changes 
 not restart the receiver. The user's subjective calibration at 25% still requires
 feedback. No media transport, GATT layout, decoder, renderer, capture/watchdog or
 installer source changed (hash baseline: work/pointer-speed-baseline.json).
+
+
+## 2026-09-11 - Repository cleanup and hover-effect clarification
+
+User requested removal of excessive generated files before pushing to Git.
+Measured workspace size before cleanup: 10.669 GiB. Preserved one
+current portable build with runtime DLLs and third-party notices in dist/portable.
+Removed 33 verified generated paths: Cargo outputs, MSYS/build caches, downloaded
+corresponding-source copies, unmodified research clones and obsolete installers/
+source ZIPs. Source archives/tool packages remain regenerable from pinned recipes.
+Small raw hardware evidence and work-root diagnostics were retained locally.
+
+After cleanup: 69.26 MiB total, including portable runtime and local
+validation evidence. Git-visible files: 276, 4.578 MiB;
+largest file 0.461 MiB. Verified all 276 pre-clean source
+hashes unchanged. No commit or push was performed; no remote is configured.
+.gitignore now excludes all research and generated benchmark data.
+
+Added scripts/clean.ps1 (PowerShell 7), which validates absolute workspace targets,
+refuses in-use/reparse targets, preserves modified research clones and requires
+an existing portable release. The post-clean portable startup smoke passed with
+PATH restricted to Windows system directories. Native CTest passed 5/5 before
+caches were removed; no rebuild was run after cleanup.
+
+Portable PID 22988 then streamed real USB video at 1180x2556 with hardware decode.
+The Mute control was absent and current-process native logs contained zero WASAPI
+entries while video output continued, verifying the final audio-only native guard.
+Current app diagnostics showed RelativeMouse with one active mouse subscriber;
+DirectTouch exact placement remains unconfirmed on the phone.
+
+The user clarified that icons and Control Center controls themselves lift/scale
+on hover, not a Hover Text enlargement window. This matches UIKit's pointer lift
+effect, documented by Apple for app icons and Control Center. The earlier Hover
+Text suggestion was incorrect. No custom hover scaling exists in iMirror. Direct
+touch sends contacts only on press/drag/release; it sends no hover motion. iMirror
+does not claim to have disabled the operating system's pointer animations globally.
+Reference: https://developer.apple.com/design/human-interface-guidelines/pointing-devices
+
+## 2026-09-11 - Direct touch audit and production UI quarantine
+
+The user reported a failed physical DirectTouch test: enable the profile, click
+the mirrored screen, and no action on the phone. Record FAIL, not a successful
+touch test or a mapping-unit-test PASS. No successful absolute touch is recorded.
+
+Traced preview WM_LBUTTONDOWN/UP through parent message routing, the touch_ready
+gate, viewport Mapper, the bounded input worker, HidPeripheral::touch_contact,
+six-byte finger reports and NotifyValueForSubscribedClientAsync. It is real BLE
+HID over GATT (0x1812, report 0x2A4D, report ID 2), adapted from MIT WinBleTouch
+d80d659af53188c45d3d2966f86ec35c0849287f. No USB/Wi-Fi/WDA/XCTest path is used for
+DirectTouch. No Apple account, signing, Developer Mode, jailbreak or phone app is
+requested by this path. Upstream's Zoom Full Screen/1x/Controller-off setup remains
+an unvalidated compatibility assumption for this phone.
+
+Current and saved touch-named diagnostics had returned to RelativeMouse. No
+retained touch DOWN/UP result establishes how far the failed click reached. The
+UI has a silent pre-mapping return when touch_ready is false, but the available
+evidence does not prove this branch handled that click. Exact runtime stop point
+is unknown. Subscription and Windows notification acceptance cannot prove iOS
+touch interpretation.
+
+Removed only the normal toolbar entry and DirectTouch command handler; adjusted
+the two Fit button indices for that removal. Explicit --ble-direct-touch remains
+a diagnostic opt-in; no Automatic control mode exists (Auto is video quality).
+No new backend, mapping change, report change, mirroring change, or synthetic click
+was made. Preserved the pre-existing engineering-log edits. No app restart or
+portable-binary replacement is part of this audit; the running EXE is unchanged.
+
+## 2026-09-11 - Focused one-click DirectTouch debug build
+
+User approved tracing and compatibility corrections before another hardware test.
+Fetched pinned WinBleTouch Program.cs into ignored work/direct-touch-debug. Compared
+its Report Map independently with the fixture: 78 bytes, exact match. A hand-copied
+fixture initially had an extra zero; the independent upstream comparison caught
+it and the corrected fixture and all ten BLE tests pass. No physical result is
+inferred from those tests.
+
+DirectTouch now advertises the standalone report ID 1 finger collection and no
+keyboard collection. Relative HID reports are unchanged. Matched reference HID
+Information, initial report, properties/protection, reference descriptor, battery
+read-only advertising and validated 6-byte notification completion. Kept selected
+client targeting, bounded waits and explicit discovery/write validation; differences
+are documented in DIRECT_TOUCH_DEBUG.md. Context7's API-reference skill was read,
+but its tools are not exposed in this session; pinned source and installed
+windows-rs 0.61.3 bindings supplied the API details.
+
+Added a bounded shared trace independent of the command queue and subscriber
+snapshots. Records preview receipt before parent dispatch, readiness failures,
+coordinates, queue rejection/cancellation, actual bytes and GATT notifications.
+Advanced Diagnostics refreshes during Bluetooth waits; UI does no file I/O.
+Explicit --direct-touch-one-click allows only one DOWN attempt and no drag reports.
+No synthetic click, physical test, mirror restart or new backend was performed.
+Native capture, video, audio, decoder, renderer, AirPlay and coordinate-map library
+sources remain unchanged; only input-side mapping error reporting was expanded.
+
+Commands:
+    cargo test -p imirror-input-ble --locked --target-dir target/direct-touch-debug
+    cargo build --release --locked --target-dir target/direct-touch-debug
+
+Physical iPhone setup and the single center click remain pending user interaction.
+
+Final software verification: cargo fmt --check passed; all ten BLE tests passed;
+app release/all-targets Clippy passed with only the pre-existing benchmark
+clippy::manual_is_multiple_of lint excluded. The final cargo build --release
+--locked --target-dir target/direct-touch-debug completed successfully (18.55s
+incremental build). Protected media/vendor/benchmark paths have no diff.
+
+New staged EXE: dist/direct-touch-debug/iMirror.exe, 3,013,120 bytes.
+SHA-256: df4bc10e893980e34b59e6ff0858d06555cf866d18cc68fec904b2b26966ae7d.
+Verified it matches the release output and differs from the previous portable EXE.
+Runtime files and notices accompany it; Start-DirectTouch-Debug.cmd supplies the
+explicit one-click flag. Build marker: direct-touch-one-click-20260911-01.
+Read-only --version process exited 0 with no stderr. An initial PowerShell direct
+GUI-subsystem invocation printed the version but did not set LASTEXITCODE, so the
+exit was rechecked using Start-Process -Wait -PassThru. No advertising, synthetic
+click, physical click, app mirror session or installer test ran in this pass.
+
+The trace also writes a per-process timestamped archive to prevent a later process
+overwriting the click evidence. Stage manifest and version-check evidence are in
+dist/direct-touch-debug/build-manifest.json and work/direct-touch-debug respectively.
+
+## 2026-09-11 - First traced physical DirectTouch click
+
+After the user confirmed the Zoom setup ready, Windows Computer Use failed twice
+with native pipe unavailable (os error 2), including after kernel reset. No
+PowerShell UI injection was substituted. The user manually closed/reopened the
+diagnostic launcher. An overlapping earlier RelativeMouse process coincided with
+new-provider ABORTED; after the user reopened one instance, PID 22752 reached
+DirectTouch STARTED, one active digitizer subscriber, a fresh Report Map response,
+selected target and no readiness blockers. No pairing change was needed for that
+observed fresh descriptor read/subscription. Initial USB discovery was empty, then
+the user connected video; native logs confirmed 1180x2556 output from this PID.
+
+The user clicked before the next instruction. The first recorded click occurred
+at client physical (352,312), normalized (0.612663,0.306183), integer HID (6127,3062),
+not the requested center. At DOWN, profile=DirectTouch, capture state=4, readiness
+true both in UI and worker, selected subscriber active and Report Map read true.
+Queue accepted DOWN. Actual bytes: 03 00 EF 17 F6 0B. GATT returned Success (0),
+BytesSent=6/6, ProtocolError=None. The subsequent UP bytes were 02 00 EF 17 F6 0B,
+also Success (0), 6/6, no protocol error. Both notification calls completed about
+3 ms after their logged starts; this is local API time, not physical touch latency.
+The log contains exactly one successful DOWN and one successful UP result for this
+attempt. Later clicks were blocked and the user later selected RelativeMouse.
+The bounded trace retained all first-click events despite later cancellation noise.
+
+Evidence: work/direct-touch-debug/hardware-click-22752.json, copied from the
+per-process archive in dist/direct-touch-debug. This proves Windows notification
+completion, not iOS touch interpretation. No additional click, drag, keyboard test, source fix or mirror change was
+performed in this hardware-observation pass.
+
+The user then confirmed live video, selected a conflicting "The iPhone responded"
+option, and immediately clarified in their own Vietnamese text: "tôi ấn nhưng ko
+thấy phản hồi gì cả" (clicked but saw no response). The latest explicit written
+clarification is authoritative: physical response for this attempt is FAIL.
+Windows API completion remains observed; no iOS-side trace or radio packet capture
+establishes where the report was ignored. This is not proof that every iOS device
+rejects absolute HID. The actual point was not the requested center and its UI
+target was not independently inspected. No second touch was sent. DirectTouch
+remains experimental and excluded from normal/automatic control.

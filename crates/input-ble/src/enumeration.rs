@@ -188,7 +188,7 @@ impl Trace {
             }
         }
         let mut state = self.0.observation.lock().unwrap_or_else(|e| e.into_inner());
-        let count = if report_id == 2 && profile == HidProfile::DirectTouch {
+        let count = if profile == HidProfile::DirectTouch {
             &mut state.touch_subscription_events
         } else if report_id == 2 {
             &mut state.mouse_subscription_events
@@ -225,7 +225,6 @@ pub(crate) fn install_read(
                 .and_then(|id| id.Id())
                 .ok()
                 .map(|id| id.to_string());
-            trace.read(name, request.Offset()?, reader);
             if let Err(error) = args
                 .Session()
                 .and_then(|session| trace.observe_session(session))
@@ -234,7 +233,10 @@ pub(crate) fn install_read(
             }
             let bytes = value.lock().unwrap_or_else(|e| e.into_inner()).clone();
             // Match upstream: Windows receives the full attribute value and handles ATT framing.
-            request.RespondWithValue(&buffer(&bytes)?)
+            request.RespondWithValue(&buffer(&bytes)?)?;
+            // A request alone is not proof that the Report Map response succeeded.
+            trace.read(name, request.Offset()?, reader);
+            Ok::<_, windows::core::Error>(())
         })();
         if let Err(error) = &result {
             trace.note(format!("ReadRequested failed for {name}: {error}"));
@@ -246,6 +248,7 @@ pub(crate) fn install_read(
 #[derive(Clone, Copy)]
 pub(crate) enum WriteKind {
     None,
+    ReadOnly,
     ControlPoint,
     ProtocolMode,
 }
@@ -271,6 +274,7 @@ impl Metadata {
         encrypted: bool,
     ) -> Result<Self, BluetoothError> {
         let properties = match kind {
+            WriteKind::ReadOnly => GattCharacteristicProperties::Read,
             WriteKind::None => {
                 if id == 0x2a19 {
                     GattCharacteristicProperties::Read | GattCharacteristicProperties::Notify
@@ -300,7 +304,7 @@ impl Metadata {
                 trace.clone(),
             )?);
         }
-        if !matches!(kind, WriteKind::None) {
+        if !matches!(kind, WriteKind::None | WriteKind::ReadOnly) {
             let event_trace = trace.clone();
             metadata.write_token = Some(metadata.characteristic.WriteRequested(
                 &TypedEventHandler::<GattLocalCharacteristic, GattWriteRequestedEventArgs>::new(
@@ -338,7 +342,7 @@ impl Metadata {
                                 match kind {
                                     WriteKind::ProtocolMode => state.protocol_mode = command,
                                     WriteKind::ControlPoint => state.suspended = command == 0,
-                                    WriteKind::None => {}
+                                    WriteKind::None | WriteKind::ReadOnly => {}
                                 }
                                 state.event(format!("WriteRequested: {name} = {command}"));
                             } else {

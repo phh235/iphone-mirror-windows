@@ -82,7 +82,12 @@ impl InputWorker {
                     last_generation=gen_now;
                 }
                 if let Ok((generation,command))=incoming.recv_timeout(Duration::from_millis(100)) {
-                    if generation!=current.load(Ordering::Acquire) { continue; }
+                    if generation!=current.load(Ordering::Acquire) {
+                        if crate::touch_debug::enabled() && matches!(command,Command::TouchContact(..)|Command::TouchRelease) {
+                            crate::touch_debug::trace().record("QUEUE_CANCELLED",format!("{} discarded: queued generation {generation}, current {}",touch_command_name(&command).unwrap_or("touch"),current.load(Ordering::Acquire)));
+                        }
+                        continue;
+                    }
                     let start=std::time::Instant::now();
                     let result:Result<(),String>=(|| {
                         match command {
@@ -105,6 +110,9 @@ impl InputWorker {
                                 if outgoing.is_full() { let _=replace.try_recv(); }
                                 let _=outgoing.try_send(snapshot.clone());
                                 ble=Some(HidPeripheral::start_profile(&mut snapshot.ble,profile).map_err(|e|e.to_string())?);
+                                if crate::touch_debug::enabled() && let Some(controller)=&mut ble {
+                                    controller.set_touch_trace(crate::touch_debug::trace().clone());
+                                }
                                 snapshot.mode=if profile==HidProfile::DirectTouch {3}else{1};
                             }
                             Command::BleSelect(id)=>{
@@ -123,17 +131,31 @@ impl InputWorker {
                                 result?;
                             }
                             Command::TouchContact(x,y)=>{
-                                let controller=ble.as_mut().ok_or("Enable Direct touch first")?;
-                                let first=!controller.touch_active();
-                                controller.touch_contact(x,y).map_err(|e|e.to_string())?;
-                                if first {snapshot.last_diagnostic=Some(format!("Absolute touch DOWN sent at ({x},{y}); validate the phone location."));}
+                                let trace=crate::touch_debug::trace();
+                                trace.record("DOWN_DEQUEUED",format!("input worker received absolute HID ({x},{y})"));
+                                let result=(|| -> Result<(),String> {
+                                    let controller=ble.as_mut().ok_or("DirectTouch backend is not created")?;
+                                    let live=controller.diagnostics().map_err(|e|e.to_string())?;
+                                    let blockers=live.touch_blockers();
+                                    trace.record("WORKER_TOUCH_READY",format!("{}; reasons={blockers:?}; subscriber={:?}; ReportMapRead={}",blockers.is_empty(),live.selected_target,live.selected_target.as_ref().is_some_and(|id|live.enumeration.report_map_readers.contains(id))));
+                                    if !blockers.is_empty() {return Err(blockers.join("; "));}
+                                    controller.touch_contact(x,y).map_err(|e|e.to_string())
+                                })();
+                                if let Err(error)=&result {trace.record("DOWN_STOPPED",error.clone());}
+                                snapshot.last_diagnostic=Some(match &result {Ok(())=>format!("DOWN: Windows reports success and 6/6 bytes at ({x},{y}); physical response unconfirmed"),Err(error)=>format!("DOWN stopped: {error}")});
+                                result?;
                             }
                             Command::TouchRelease=>{
+                                let trace=crate::touch_debug::trace();
+                                trace.record("UP_DEQUEUED","input worker received release");
                                 if let Some(controller)=&mut ble {
                                     let active=controller.touch_active();
-                                    controller.touch_release().map_err(|e|e.to_string())?;
-                                    if active {snapshot.last_diagnostic=Some("Absolute touch UP sent.".into());}
-                                }
+                                    if !active {trace.record("UP_NOT_SENT","No contact became active; inspect DOWN trace");}
+                                    let result=controller.touch_release().map_err(|e|e.to_string());
+                                    if let Err(error)=&result {trace.record("UP_STOPPED",error.clone());}
+                                    result?;
+                                    if active {snapshot.last_diagnostic=Some("UP: Windows reports success and 6/6 bytes; inspect persistent click trace for DOWN.".into());}
+                                } else {trace.record("UP_NOT_SENT","DirectTouch backend is not created");}
                             }
                             Command::PointerSpeed(percent)=>{
                                 motion.set_percent(percent);
@@ -218,10 +240,16 @@ impl InputWorker {
                 // BLE state changes only; no video/audio data or per-frame I/O.
                 if let Ok(json)=serde_json::to_string_pretty(&serde_json::json!({
                     "process_id":std::process::id(), "ble":snapshot.ble,
+                    "build_id":crate::touch_debug::BUILD_ID,
+                    "executable":std::env::current_exe().ok(),
+                    "touch_trace_archive":crate::touch_debug::archive_path(),
                     "pointer_speed_percent":snapshot.pointer_speed_percent,"pointer_settings_notice":snapshot.pointer_settings_notice,
                     "error":snapshot.ble_error, "last_diagnostic":snapshot.last_diagnostic,
+                    "direct_touch_trace":crate::touch_debug::trace().snapshot(),
+                    "direct_touch_blockers":snapshot.ble.touch_blockers(),
                 })) && json!=last_diagnostics_json {
-                    if let Some(path)=diagnostic_path() {
+                    let paths=diagnostic_path().into_iter().chain(crate::touch_debug::archive_path().map(std::path::Path::to_path_buf));
+                    for path in paths {
                         let written=(|| -> std::io::Result<()> {
                             if let Some(parent)=path.parent() { std::fs::create_dir_all(parent)?; }
                             std::fs::write(&path,&json)
@@ -246,18 +274,40 @@ impl InputWorker {
         })
     }
     pub fn send(&self, command: Command) -> bool {
+        let touch_stage = touch_command_name(&command);
+        if let Some(phase) = touch_stage {
+            crate::touch_debug::trace().record(
+                &format!("{phase}_QUEUE_ATTEMPT"),
+                format!("generation={}", self.generation.load(Ordering::Acquire)),
+            );
+        }
         if self
             .sender
             .try_send((self.generation.load(Ordering::Acquire), command))
             .is_err()
         {
+            if let Some(phase) = touch_stage {
+                crate::touch_debug::trace().record(
+                    &format!("{phase}_QUEUE_REJECTED"),
+                    "Input queue full or disconnected; pending generation cancelled",
+                );
+            }
             self.cancel();
             false
         } else {
+            if let Some(phase) = touch_stage {
+                crate::touch_debug::trace().record(
+                    &format!("{phase}_QUEUED"),
+                    "YES: bounded queue accepted command (worker may already be running)",
+                );
+            }
             true
         }
     }
     pub fn cancel(&self) {
+        if crate::touch_debug::enabled() && crate::touch_debug::trace().started() {
+            crate::touch_debug::trace().record("INPUT_CANCELLED","Focus/capture/release or queue cancellation; active contact release will be attempted by input worker");
+        }
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
     pub fn stop(&mut self) {
@@ -266,6 +316,13 @@ impl InputWorker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+fn touch_command_name(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::TouchContact(..) => Some("DOWN"),
+        Command::TouchRelease => Some("UP"),
+        _ => None,
     }
 }
 impl Drop for InputWorker {
