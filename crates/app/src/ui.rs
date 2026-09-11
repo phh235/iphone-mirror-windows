@@ -896,7 +896,22 @@ unsafe extern "system" fn preview_proc(
                 SetCapture(hwnd);
             }
             if let Ok(parent) = GetParent(hwnd) {
-                let _ = PostMessageW(Some(parent), WM_APP + msg, wparam, lparam);
+                // x64 mouse wParam uses only its low 32 bits. Preserve a monotonic
+                // receipt timestamp through our private parent-message forwarding.
+                let timed = if matches!(
+                    msg,
+                    WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MOUSEWHEEL
+                ) {
+                    WPARAM(
+                        (wparam.0 & 0xffff_ffff)
+                            | (((imirror_input_core::metrics::now_ns() / 1000) as usize
+                                & 0xffff_ffff)
+                                << 32),
+                    )
+                } else {
+                    wparam
+                };
+                let _ = PostMessageW(Some(parent), WM_APP + msg, timed, lparam);
             }
             return LRESULT(0);
         }
@@ -1022,6 +1037,15 @@ fn hid_key(vk: usize) -> Option<u8> {
     }
 }
 fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPARAM) {
+    let now = imirror_input_core::metrics::now_ns();
+    let low = (wparam.0 >> 32) as u64;
+    let now_us = now / 1000;
+    let mut received_us = (now_us & !0xffff_ffff) | low;
+    if received_us > now_us {
+        received_us = received_us.wrapping_sub(1u64 << 32);
+    }
+    let received = received_us.saturating_mul(1000).min(now);
+    let wparam = WPARAM(wparam.0 & 0xffff_ffff);
     let p = Point {
         x: (lparam.0 as u16 as i16) as f64,
         y: ((lparam.0 >> 16) as u16 as i16) as f64,
@@ -1049,7 +1073,7 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                     state.gesture.press(Some(point), Instant::now());
                 }
                 if state.input_snapshot.mode == 1 {
-                    state.input.send(InputCommand::Mouse(1, 0, 0, 0));
+                    state.input.send(InputCommand::Mouse(1, 0, 0, 0, received));
                 }
             } else {
                 release_input(state);
@@ -1061,7 +1085,7 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                     state.input.send(InputCommand::Action(action));
                 }
             } else if state.captured {
-                state.input.send(InputCommand::Mouse(0, 0, 0, 0));
+                state.input.send(InputCommand::Mouse(0, 0, 0, 0, received));
             }
             let _ = ReleaseCapture();
         } else if msg == WM_MOUSEMOVE && state.captured && state.input_snapshot.mode == 1 {
@@ -1075,6 +1099,7 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                     (p.x - last.x) as i32,
                     (p.y - last.y) as i32,
                     0,
+                    received,
                 ));
             }
         } else if msg == WM_MOUSEWHEEL && state.captured {
@@ -1096,7 +1121,9 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
             }
             let delta = ((wparam.0 >> 16) as u16 as i16) as i32 / 120;
             if state.input_snapshot.mode == 1 {
-                state.input.send(InputCommand::Mouse(0, 0, 0, delta));
+                state
+                    .input
+                    .send(InputCommand::Mouse(0, 0, 0, delta, received));
             } else if let Some(size) = state.input_snapshot.geometry {
                 let from = Point {
                     x: size.width * 0.5,

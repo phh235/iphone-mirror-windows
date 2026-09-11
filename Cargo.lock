@@ -413,6 +413,7 @@ name = "imirror-input-core"
 version = "0.1.0"
 dependencies = [
  "imirror-coordinate-map",
+ "serde",
 ]
 
 [[package]]

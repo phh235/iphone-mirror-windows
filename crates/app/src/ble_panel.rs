@@ -323,6 +323,10 @@ impl BlePanel {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "unavailable".into())
         );
+        let text = format!(
+            "Input performance (software latency, not phone display latency):\r\n{:#?}\r\n\r\n{}",
+            input.performance, text
+        );
         // SAFETY: HWNDs are retained by this panel; Win32 copies strings synchronously.
         unsafe {
             let _ = EnableWindow(self.speed, true);

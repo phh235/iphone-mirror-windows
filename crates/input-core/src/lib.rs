@@ -1,3 +1,4 @@
+pub mod metrics;
 mod pointer;
 use imirror_coordinate_map::{Point, Size};
 pub use pointer::{DEFAULT_POINTER_SPEED, MAX_POINTER_SPEED, MIN_POINTER_SPEED, PointerScale};

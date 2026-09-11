@@ -1,6 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, bounded};
 use imirror_coordinate_map::Size;
 use imirror_input_ble::{DiagnosticAction, Diagnostics, HidPeripheral};
+use imirror_input_core::metrics::{Metrics, now_ns};
 use imirror_input_core::{Controller, Input, PointerScale};
 use imirror_input_wda::Wda;
 use std::{
@@ -20,7 +21,7 @@ pub enum Command {
     PointerSpeed(u16),
     Disable,
     Action(Input),
-    Mouse(u8, i32, i32, i32),
+    Mouse(u8, i32, i32, i32, u64),
     Key(u8, Vec<u8>),
 }
 #[derive(Clone, Default)]
@@ -35,9 +36,11 @@ pub struct Snapshot {
     pub latency_ms: Option<f64>,
     pub pointer_speed_percent: u16,
     pub pointer_settings_notice: Option<String>,
+    pub performance: imirror_input_core::metrics::Snapshot,
 }
 pub struct InputWorker {
-    sender: Sender<(u64, Command)>,
+    sender: Sender<(u64, Command, u64)>,
+    pub metrics: Arc<Metrics>,
     pub snapshots: Receiver<Snapshot>,
     generation: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
@@ -45,7 +48,9 @@ pub struct InputWorker {
 }
 impl InputWorker {
     pub fn start() -> std::io::Result<Self> {
-        let (sender, incoming) = bounded::<(u64, Command)>(32);
+        let (sender, incoming) = bounded::<(u64, Command, u64)>(32);
+        let metrics = Arc::new(Metrics::default());
+        let measured = metrics.clone();
         let (outgoing, snapshots) = bounded(1);
         let replace = snapshots.clone();
         let generation = Arc::new(AtomicU64::new(0));
@@ -67,6 +72,7 @@ impl InputWorker {
             let mut wda:Option<Wda>=None; let mut ble:Option<HidPeripheral>=None;
             let mut last_generation=0;
             let mut last_diagnostics_json=String::new();
+            let mut next_metrics=std::time::Instant::now();
             // Explicit diagnostic invocation only; never armed by normal launch.
             let move_right_armed=std::env::args().any(|arg|arg=="--ble-move-right-once");
             let mut move_right_due:Option<std::time::Instant>=None;
@@ -79,7 +85,11 @@ impl InputWorker {
                     if let Some(wda)=&mut wda { let _=wda.dispatch(Input::Release); }
                     last_generation=gen_now;
                 }
-                if let Ok((generation,command))=incoming.recv_timeout(Duration::from_millis(100)) {
+                if let Ok((generation,command,queued_at))=incoming.recv_timeout(Duration::from_millis(100)) {
+                    if let Command::Mouse(_,dx,dy,_,_)=&command {
+                        if *dx!=0 || *dy!=0 {measured.pending.fetch_sub(1,Ordering::Relaxed);}
+                        measured.queue.record(now_ns().saturating_sub(queued_at));
+                    }
                     if generation!=current.load(Ordering::Acquire) { continue; }
                     let start=std::time::Instant::now();
                     let result:Result<(),String>=(|| {
@@ -134,11 +144,15 @@ impl InputWorker {
                                 wda.dispatch(action).map_err(|e|e.to_string())?;
                                 snapshot.latency_ms=wda.last_request.map(|d|d.as_secs_f64()*1000.0);
                             }
-                            Command::Mouse(buttons,dx,dy,wheel)=>{
+                            Command::Mouse(buttons,dx,dy,wheel,received)=>{
                                 let (dx,dy)=motion.scale(dx,dy);
+                                measured.scale.record(now_ns().saturating_sub(queued_at));
                                 // Preserve button transitions/wheel, but do not enqueue zero-motion duplicates.
                                 if dx!=0 || dy!=0 || wheel!=0 || last_mouse_buttons!=Some(buttons) {
-                                    ble.as_mut().ok_or("Enable BLE control first")?.mouse(buttons,dx,dy,wheel).map_err(|e|e.to_string())?;
+                                    let button=last_mouse_buttons!=Some(buttons);
+                                    let result=ble.as_mut().ok_or("Enable BLE control first")?.mouse_observed(buttons,dx,dy,wheel,||measured.submitted(received,now_ns(),button,wheel!=0));
+                                    if result.is_ok(){measured.complete.record(now_ns().saturating_sub(received));}else{measured.failed.fetch_add(1,Ordering::Relaxed);}
+                                    result.map_err(|e|e.to_string())?;
                                     last_mouse_buttons=Some(buttons);
                                     snapshot.latency_ms=Some(start.elapsed().as_secs_f64()*1000.0);
                                 }
@@ -200,11 +214,13 @@ impl InputWorker {
                     snapshot.pointer_settings_notice=crate::pointer_settings::save(motion.percent()).err().map(|error|format!("Speed is applied but could not be saved: {error}"));
                 }
                 // BLE state changes only; no video/audio data or per-frame I/O.
+                if std::time::Instant::now()>=next_metrics {snapshot.performance=measured.snapshot();next_metrics=std::time::Instant::now()+Duration::from_secs(1);}
                 if let Ok(json)=serde_json::to_string_pretty(&serde_json::json!({
                     "process_id":std::process::id(), "ble":snapshot.ble,
                     "executable":std::env::current_exe().ok(),
                     "pointer_speed_percent":snapshot.pointer_speed_percent,"pointer_settings_notice":snapshot.pointer_settings_notice,
                     "error":snapshot.ble_error, "last_diagnostic":snapshot.last_diagnostic,
+                    "input_source":"WM_MOUSEMOVE baseline", "performance":snapshot.performance,
                 })) && json!=last_diagnostics_json {
                     if let Some(path)=diagnostic_path() {
                         let written=(|| -> std::io::Result<()> {
@@ -224,6 +240,7 @@ impl InputWorker {
         })?;
         Ok(Self {
             sender,
+            metrics,
             snapshots,
             generation,
             stop,
@@ -231,11 +248,26 @@ impl InputWorker {
         })
     }
     pub fn send(&self, command: Command) -> bool {
+        let movement = matches!(&command,Command::Mouse(_,dx,dy,_,_) if *dx!=0 || *dy!=0);
+        if let Command::Mouse(_, _, _, _, received) = &command {
+            self.metrics.input_times.record(*received);
+            self.metrics
+                .extract
+                .record(now_ns().saturating_sub(*received));
+        }
+        if movement {
+            let n = self.metrics.pending.fetch_add(1, Ordering::Relaxed) + 1;
+            self.metrics.max_pending.fetch_max(n, Ordering::Relaxed);
+        }
         if self
             .sender
-            .try_send((self.generation.load(Ordering::Acquire), command))
+            .try_send((self.generation.load(Ordering::Acquire), command, now_ns()))
             .is_err()
         {
+            if movement {
+                self.metrics.pending.fetch_sub(1, Ordering::Relaxed);
+            }
+            self.metrics.rejected.fetch_add(1, Ordering::Relaxed);
             self.cancel();
             false
         } else {

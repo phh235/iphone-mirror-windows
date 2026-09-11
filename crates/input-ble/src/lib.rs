@@ -314,6 +314,14 @@ impl Report {
         Ok(report)
     }
     fn send(&self, target: &str, bytes: &[u8]) -> Result<(), BluetoothError> {
+        self.send_observed(target, bytes, || {})
+    }
+    fn send_observed(
+        &self,
+        target: &str,
+        bytes: &[u8],
+        mut before_notify: impl FnMut(),
+    ) -> Result<(), BluetoothError> {
         *self.value.lock().unwrap_or_else(|e| e.into_inner()) = bytes.to_vec();
         for client in self.characteristic.SubscribedClients()? {
             let session = client.Session()?;
@@ -321,6 +329,7 @@ impl Report {
                 if session.SessionStatus()? != GattSessionStatus::Active {
                     return Err(BluetoothError::Disconnected);
                 }
+                before_notify();
                 let result = self
                     .characteristic
                     .NotifyValueForSubscribedClientAsync(&buffer(bytes)?, &client)?
@@ -580,9 +589,19 @@ impl HidPeripheral {
         dy: i32,
         wheel: i32,
     ) -> Result<(), BluetoothError> {
+        self.mouse_observed(buttons, dx, dy, wheel, || {})
+    }
+    pub fn mouse_observed(
+        &mut self,
+        buttons: u8,
+        dx: i32,
+        dy: i32,
+        wheel: i32,
+        before_notify: impl FnMut(),
+    ) -> Result<(), BluetoothError> {
         let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
         self.mouse
-            .send(target, &mouse_report(buttons, dx, dy, wheel))
+            .send_observed(target, &mouse_report(buttons, dx, dy, wheel), before_notify)
     }
     pub fn keyboard(&mut self, modifiers: u8, keys: &[u8]) -> Result<(), BluetoothError> {
         let target = self.target.as_deref().ok_or(BluetoothError::NoTarget)?;
