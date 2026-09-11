@@ -1,0 +1,16 @@
+# Generated build outputs and runtime packages
+/target/
+/dist/
+/work/
+
+# Upstream research checkouts and machine diagnostics
+/research/
+
+# Hardware measurements are local evidence, not source
+/benchmarks/*
+!/benchmarks/README.md
+
+# Local logs and Python bytecode
+*.log
+__pycache__/
+*.py[cod]

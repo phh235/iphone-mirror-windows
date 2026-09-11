@@ -1,0 +1,11 @@
+[package]
+name = "imirror-platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+windows = { workspace = true, features = ["Win32_System_Registry","Win32_System_WinRT"] }
+serde.workspace = true
+imirror-input-ble = { path = "../input-ble" }
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "imirror-input-ble"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+windows-future = "=0.2.1"
+thiserror.workspace = true
+serde.workspace = true
+windows = { workspace = true, features = ["Devices_Bluetooth_GenericAttributeProfile","Devices_Enumeration","Devices_Radios","Foundation","Security_Cryptography","Storage_Streams","Win32_System_WinRT"] }
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "imirror"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "iMirror"
+path = "src/main.rs"
+
+[dependencies]
+imirror-video-airplay = { path = "../video-airplay" }
+imirror-device = { path = "../device" }
+imirror-coordinate-map = { path = "../coordinate-map" }
+imirror-input-core = { path = "../input-core" }
+imirror-input-wda = { path = "../input-wda" }
+imirror-input-ble = { path = "../input-ble" }
+imirror-platform-windows = { path = "../platform-windows" }
+imirror-native-core = { path = "../native-core" }
+windows.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

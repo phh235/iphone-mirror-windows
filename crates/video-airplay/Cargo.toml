@@ -1,0 +1,15 @@
+[package]
+name = "imirror-video-airplay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+imirror-native-core = { path = "../native-core" }
+imirror-decoder = { path = "../decoder" }
+imirror-video-core = { path = "../video-core" }
+thiserror.workspace = true
+tracing.workspace = true
+socket2 = "=0.6.5"
+windows = { workspace = true, features = ["Win32_System_JobObjects","Win32_Security"] }
+[lints]
+workspace = true

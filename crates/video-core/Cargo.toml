@@ -1,0 +1,10 @@
+[package]
+name = "imirror-video-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+thiserror.workspace = true
+h264-reader = "=0.8.0"
+[lints]
+workspace = true

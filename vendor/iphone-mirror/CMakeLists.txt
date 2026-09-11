@@ -1,0 +1,28 @@
+cmake_minimum_required(VERSION 3.25)
+project(iMirrorNativeTests VERSION 0.1.0 LANGUAGES CXX)
+set(IPHONEMIRROR_VERSION "0.1.0")
+set(IPHONEMIRROR_FILE_VERSION "0,1,0,0")
+configure_file(src/Core/resources/iPhoneMirror.Core.rc.in
+    "${CMAKE_BINARY_DIR}/src/Core/iPhoneMirror.Core.rc" @ONLY)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(IPHONEMIRROR_BUILD_TESTS ON)
+set(IPHONEMIRROR_BUILD_DANGEROUS_USB_TOOLS OFF)
+enable_testing()
+add_subdirectory(src/Core)
+target_link_libraries(iPhoneMirror.Core PRIVATE oleaut32)
+target_link_libraries(iPhoneMirror.Core.Tests PRIVATE oleaut32)
+add_executable(iMirror.SourceFrameCounter.Tests src/Core/tests/SourceFrameCounterTests.cpp src/Core/src/Media/CoreMedia.cpp src/Core/src/Protocol/QuickTimePacket.cpp)
+target_include_directories(iMirror.SourceFrameCounter.Tests PRIVATE src/Core/src)
+add_test(NAME SourceFrameCounterTests COMMAND iMirror.SourceFrameCounter.Tests)
+
+add_executable(iMirror.EncodedFixture.Tests src/Core/tests/EncodedFixtureTests.cpp
+    src/Core/src/Protocol/QuickTimePacket.cpp src/Core/src/Media/CoreMedia.cpp src/Core/src/Media/H264.cpp)
+target_include_directories(iMirror.EncodedFixture.Tests PRIVATE src/Core/include src/Core/src)
+target_compile_options(iMirror.EncodedFixture.Tests PRIVATE /W4 /EHsc /utf-8)
+target_link_libraries(iMirror.EncodedFixture.Tests PRIVATE iPhoneMirror.Core)
+set_target_properties(iMirror.EncodedFixture.Tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src/Core")
+add_test(NAME EncodedFixtureTests COMMAND iMirror.EncodedFixture.Tests)
+set_tests_properties(EncodedFixtureTests PROPERTIES WORKING_DIRECTORY "$<TARGET_FILE_DIR:iMirror.EncodedFixture.Tests>" TIMEOUT 15)
+

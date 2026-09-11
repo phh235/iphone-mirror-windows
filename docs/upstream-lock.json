@@ -1,0 +1,74 @@
+[
+  {
+    "name": "go-ios",
+    "url": "https://github.com/danielpaulus/go-ios.git",
+    "commit": "7e82aa2c83959beadca3f45993398d2a5c236321",
+    "last_commit": "2026-09-04T14:39:36+02:00 feat(display): start CoreDevice display media streams"
+  },
+  {
+    "name": "ioscpy",
+    "url": "https://github.com/lautarovculic/ioscpy.git",
+    "commit": "72662ed3a3df54103235ca390059b4f16f750c11",
+    "last_commit": "2026-07-14T01:25:07-03:00 Revise ToDo list in README.md"
+  },
+  {
+    "name": "ioscpy-windows",
+    "url": "https://github.com/0xbartita/ioscpy-windows.git",
+    "commit": "b94e2681e8b2b0f7e17edb1d47f48da197b8b331",
+    "last_commit": "2026-09-03T00:59:34+03:00 Update README.md"
+  },
+  {
+    "name": "iPhoneMirror",
+    "url": "https://github.com/RayrenSX/iPhoneMirror.git",
+    "commit": "2635a0073c67539aec86487844fc41a5caddf9ba",
+    "last_commit": "2026-09-07T20:50:05+08:00 Merge remote-tracking branch 'origin/main'"
+  },
+  {
+    "name": "libimobiledevice",
+    "url": "https://github.com/libimobiledevice/libimobiledevice.git",
+    "commit": "fa0f79190142bc309307967c058f89c1b36eb6b8",
+    "last_commit": "2026-06-10T09:51:55+02:00 tools/afcclient: Start in /Documents when using --documents"
+  },
+  {
+    "name": "pcairplay",
+    "url": "https://github.com/gbulog/pcairplay.git",
+    "commit": "17d5a46e524f58eb7b4e562700400d61d3d3a673",
+    "last_commit": "2026-07-24T18:20:22+02:00 Add native Arch mirroring and AssistiveTouch control (#1)"
+  },
+  {
+    "name": "quicktime_video_hack",
+    "url": "https://github.com/danielpaulus/quicktime_video_hack.git",
+    "commit": "d81396e2e7758d98c2a594853b64f98b54a8a871",
+    "last_commit": "2023-05-04T12:49:50+02:00 Update README.md"
+  },
+  {
+    "name": "UxPlay",
+    "url": "https://github.com/FDH2/UxPlay.git",
+    "commit": "f2c4a66e704859e791e139db4f3fdba79cd838f9",
+    "last_commit": "2026-09-10T19:21:38-04:00 Merge pull request #568 from Recluse/reject-malformed-cli-values"
+  },
+  {
+    "name": "uxplay-windows",
+    "url": "https://github.com/leapbtw/uxplay-windows.git",
+    "commit": "cca02680ca548903e36c780aa9f800acb4d7c5eb",
+    "last_commit": "2026-09-07T23:51:31+02:00 hopefully a better logger"
+  },
+  {
+    "name": "WebDriverAgent",
+    "url": "https://github.com/appium/WebDriverAgent.git",
+    "commit": "6a2ae0565a5f783eaeac6afdc8d1c3067cbfc8a6",
+    "last_commit": "2026-09-10T04:42:24Z chore(release): 16.12.7 [skip ci]"
+  },
+  {
+    "name": "windows-ble-hid",
+    "url": "https://github.com/abhishek-raj/windows-ble-hid.git",
+    "commit": "9a4f45129779ec3bef368ea4ffcdcde795a57b65",
+    "last_commit": "2026-09-03T15:32:49+05:30 Return input locally when host disconnects"
+  },
+  {
+    "name": "WinBleTouch",
+    "url": "https://github.com/sakx7/WinBleTouch.git",
+    "commit": "d80d659af53188c45d3d2966f86ec35c0849287f",
+    "last_commit": "2026-09-09T22:52:56+01:00 fix: report BLE HID contacts as fingers for iOS edge gestures"
+  }
+]

@@ -1,0 +1,9 @@
+[package]
+name = "imirror-input-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+imirror-coordinate-map = { path = "../coordinate-map" }
+[lints]
+workspace = true
