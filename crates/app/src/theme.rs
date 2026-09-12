@@ -24,7 +24,7 @@ pub fn current(window: HWND) -> Rc<Theme> {
 }
 pub fn refresh(window: HWND) -> Rc<Theme> {
     // SAFETY: The caller owns the window; absent early-create DPI falls back to 96.
-    let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+    let dpi = dpi(window);
     let theme = Rc::new(Theme::new(dpi));
     if let Some(previous) = THEMES.with(|themes| themes.borrow().get(&(window.0 as usize)).cloned())
         && previous.dpi == theme.dpi
@@ -54,6 +54,19 @@ pub fn refresh(window: HWND) -> Rc<Theme> {
     }
     drop(old);
     theme
+}
+pub fn dpi(window: HWND) -> u32 {
+    // Test override affects only app-owned smoke layouts, never system settings.
+    let args: Vec<_> = std::env::args().collect();
+    if args.iter().any(|a| a == "--ui-smoke-test")
+        && let Some(index) = args.iter().position(|a| a == "--ui-test-dpi")
+        && let Some(value) = args.get(index + 1).and_then(|v| v.parse::<u32>().ok())
+        && [96, 120, 144, 168, 192].contains(&value)
+    {
+        return value;
+    }
+    // SAFETY: Read-only DPI query; early creation may return zero.
+    unsafe { GetDpiForWindow(window) }.max(96)
 }
 unsafe extern "system" fn font_child(window: HWND, font: LPARAM) -> windows::core::BOOL {
     // SAFETY: EnumChildWindows supplies live child handles; the theme retains the font.

@@ -296,11 +296,7 @@ impl BlePanel {
             d.cccd_support,
             events
         );
-        let probe_note = if std::env::args().any(|arg| arg == "--ble-move-right-once") {
-            "One Move Right attempt is armed: waits for an active mouse subscriber, then sends once."
-        } else {
-            "No movement test is sent automatically."
-        };
+        let probe_note = "No movement test is sent automatically.";
         let settings_notice = input
             .pointer_settings_notice
             .as_deref()
@@ -314,8 +310,8 @@ impl BlePanel {
             d.advertising_error,
             d.mouse_subscribers.len(),
             d.keyboard_subscribers.len(),
-            yes(d.mouse_ready()),
-            yes(d.keyboard_ready()),
+            yes(input.ready && d.mouse_ready()),
+            yes(input.ready && d.keyboard_ready()),
             input.message,
             input.ble_error.as_deref().unwrap_or("none"),
             input.last_diagnostic.as_deref().unwrap_or("not sent"),
@@ -324,8 +320,13 @@ impl BlePanel {
                 .unwrap_or_else(|| "unavailable".into())
         );
         let text = format!(
-            "Input performance (software latency, not phone display latency):\r\n{:#?}\r\n\r\n{}",
-            input.performance, text
+            "Control ready: {} | Transition queue: {}/{}\r\nDiagnostic file error: {}\r\nInput performance (software latency, not phone display latency):\r\n{:#?}\r\n\r\n{}",
+            input.ready,
+            input.transition_queue_depth,
+            imirror_input_core::relative::MAX_TRANSITIONS,
+            input.diagnostics_error.as_deref().unwrap_or("none"),
+            input.performance,
+            text
         );
         // SAFETY: HWNDs are retained by this panel; Win32 copies strings synchronously.
         unsafe {

@@ -6,7 +6,12 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
-        UI::{Controls::*, Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
+        UI::{
+            Controls::*,
+            Input::KeyboardAndMouse::EnableWindow,
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::*,
+        },
     },
     core::{PCWSTR, w},
 };
@@ -29,6 +34,8 @@ pub const VSYNC: usize = 233;
 pub const ADVANCED: usize = 240;
 pub const DIAGNOSTICS: usize = 241;
 pub const WDA: usize = 242;
+pub const COPY_DIAGNOSTICS: usize = 243;
+const REVEAL_FOCUS: u32 = WM_APP + 91;
 const APPLY: usize = 250;
 const STATUS: i32 = 260;
 const SPEED_LABEL: i32 = 261;
@@ -82,8 +89,14 @@ impl Panel {
         // SAFETY: Window is owned by this UI thread; context remains allocated until it is destroyed.
         unsafe {
             let instance = GetModuleHandleW(None)?;
-            let initial_scale =
-                windows::Win32::UI::HiDpi::GetDpiForWindow(owner).max(96) as f64 / 96.0;
+            let initial_scale = theme::dpi(owner) as f64 / 96.0;
+            let mut work_area = RECT::default();
+            SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some((&mut work_area as *mut RECT).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )?;
             let class = WNDCLASSW {
                 lpfnWndProc: Some(procedure),
                 hInstance: instance.into(),
@@ -98,11 +111,11 @@ impl Panel {
                 WINDOW_EX_STYLE::default(),
                 w!("iMirrorSettings"),
                 w!("iMirror Settings"),
-                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL | WS_HSCROLL,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                (720.0 * initial_scale).round() as i32,
-                (590.0 * initial_scale).round() as i32,
+                ((720.0 * initial_scale).round() as i32).min(work_area.right - work_area.left),
+                ((590.0 * initial_scale).round() as i32).min(work_area.bottom - work_area.top),
                 Some(owner),
                 None,
                 Some(instance.into()),
@@ -146,6 +159,7 @@ impl Panel {
                 if style.0 & 0xf == BS_OWNERDRAW as u32 {
                     theme::style_button(child);
                 }
+                let _ = SetWindowSubclass(child, Some(focus_child), 0x5343, window.0 as usize);
                 context.borrow_mut().items.push(Item {
                     window: child,
                     page,
@@ -450,6 +464,18 @@ impl Panel {
                 true,
             )?;
             add(
+                COPY_DIAGNOSTICS,
+                "Copy Diagnostics",
+                w!("BUTTON"),
+                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                3,
+                372,
+                160,
+                200,
+                36,
+                false,
+            )?;
+            add(
                 label(&mut label_id),
                 "WDA requires a signed iPhone runner, Developer Mode and a local connection. It is optional.",
                 w!("STATIC"),
@@ -557,22 +583,7 @@ impl Panel {
             if let Ok(label) = GetDlgItem(Some(self.window), SPEED_LABEL) {
                 let _ = SetWindowTextW(label, PCWSTR(speed.as_ptr()));
             }
-            let status = if !config.control_enabled {
-                "Control is off."
-            } else if input.ble.mouse_ready() {
-                "Ready. Click the mirrored screen to take control. Enable AssistiveTouch on iPhone if needed."
-            } else if input.ble.adapter.as_ref().is_some_and(|a| !a.peripheral) {
-                "This Bluetooth adapter cannot provide iPhone control. See Advanced Diagnostics."
-            } else if input
-                .ble
-                .adapter
-                .as_ref()
-                .is_some_and(|a| a.radio_state != "ON")
-            {
-                "Turn on Windows Bluetooth to connect control."
-            } else {
-                "Waiting for Bluetooth. Pair this PC from iPhone Bluetooth settings, then enable AssistiveTouch."
-            };
+            let status = control_guidance(config, input);
             let status = wide(status);
             if let Ok(label) = GetDlgItem(Some(self.window), STATUS) {
                 let _ = SetWindowTextW(label, PCWSTR(status.as_ptr()));
@@ -604,30 +615,153 @@ impl Panel {
     pub fn handle(&self) -> HWND {
         self.window
     }
+    pub fn validate_navigation(&self) -> Result<(), String> {
+        let context = self.context.borrow();
+        let mut checked = 0;
+        // SAFETY: Smoke test inspects and scrolls only this owned window; it never
+        // dispatches an input action to the phone or changes the system DPI.
+        unsafe {
+            if std::env::args().any(|a| a == "--ui-test-small-window") {
+                let theme = theme::current(self.window);
+                SetWindowPos(
+                    self.window,
+                    None,
+                    0,
+                    0,
+                    theme.px(430),
+                    theme.px(320),
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+                .map_err(|e| e.to_string())?;
+                layout(self.window, &context);
+            }
+            for item in &context.items {
+                if !IsWindowVisible(item.window).as_bool()
+                    || GetWindowLongW(item.window, GWL_STYLE) as u32 & WS_TABSTOP.0 == 0
+                {
+                    continue;
+                }
+                reveal(self.window, item.window);
+                layout(self.window, &context);
+                let mut rect = RECT::default();
+                let mut client = RECT::default();
+                let mut origin = windows::Win32::Foundation::POINT::default();
+                GetWindowRect(item.window, &mut rect).map_err(|e| e.to_string())?;
+                GetClientRect(self.window, &mut client).map_err(|e| e.to_string())?;
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.window, &mut origin);
+                rect.left -= origin.x;
+                rect.right -= origin.x;
+                rect.top -= origin.y;
+                rect.bottom -= origin.y;
+                if rect.bottom <= 0
+                    || rect.top >= client.bottom
+                    || rect.right <= 0
+                    || rect.left >= client.right
+                {
+                    return Err(format!(
+                        "Settings control {} is unreachable",
+                        GetDlgCtrlID(item.window)
+                    ));
+                }
+                if rect.bottom - rect.top <= client.bottom - 16
+                    && (rect.top < 0 || rect.bottom > client.bottom)
+                {
+                    return Err(
+                        "Settings vertical scrolling did not reveal the complete control".into(),
+                    );
+                }
+                checked += 1;
+            }
+        }
+        scroll(self.window, SB_HORZ, 6, 0);
+        scroll(
+            self.window,
+            SB_VERT,
+            if std::env::args().any(|a| a == "--ui-test-scroll-end") {
+                7
+            } else {
+                6
+            },
+            0,
+        );
+        layout(self.window, &context);
+        println!(
+            "Settings navigation passed: dpi={}, controls={checked}",
+            theme::dpi(self.window)
+        );
+        Ok(())
+    }
+}
+fn control_guidance(config: &Config, input: &control::Snapshot) -> &'static str {
+    if !config.control_enabled {
+        return "Control is off.";
+    }
+    if config.advanced && config.control == ControlChoice::Wda {
+        return if input.mode == 2 && input.ready {
+            "Advanced control connected."
+        } else {
+            "Advanced control is not ready. Start the signed runner and local connection; see Diagnostics."
+        };
+    }
+    if input.ready && input.ble.mouse_ready() {
+        "Ready. Click the mirrored screen to take control. Enable AssistiveTouch on iPhone if needed."
+    } else if input.ble.adapter.as_ref().is_some_and(|a| !a.peripheral) {
+        "This Bluetooth adapter cannot provide iPhone control. See Advanced Diagnostics."
+    } else if input
+        .ble
+        .adapter
+        .as_ref()
+        .is_some_and(|a| a.radio_state != "ON")
+    {
+        "Turn on Windows Bluetooth to connect control."
+    } else if input.ble.advertising_status == "STARTED" {
+        "Pair this PC from iPhone Bluetooth settings, then enable AssistiveTouch. Waiting for control connection."
+    } else {
+        "Starting Bluetooth control. Wait for advertising to start; see Diagnostics if this persists."
+    }
 }
 fn layout(window: HWND, context: &Context) {
     let theme = theme::current(window); // SAFETY: All controls are owned by this UI thread and remain alive while context is borrowed.
     unsafe {
         let mut client = RECT::default();
         let _ = GetClientRect(window, &mut client);
+        let width = client.right.max(theme.px(680));
+        let height = client.bottom.max(theme.px(550));
+        let mut offsets = [0; 2];
+        for (index, bar, extent, page) in [
+            (0, SB_HORZ, width, client.right),
+            (1, SB_VERT, height, client.bottom),
+        ] {
+            let mut info = SCROLLINFO {
+                cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+                fMask: SIF_POS,
+                ..Default::default()
+            };
+            let _ = GetScrollInfo(window, bar, &mut info);
+            info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+            info.nMin = 0;
+            info.nMax = extent - 1;
+            info.nPage = page.max(1) as u32;
+            offsets[index] = SetScrollInfo(window, bar, &info, true);
+        }
         for item in &context.items {
             let visible = (item.page == 4 || item.page == context.page)
                 && (!item.advanced || context.advanced);
             let _ = ShowWindow(item.window, if visible { SW_SHOW } else { SW_HIDE });
             let x = if item.page == 4 && item.y == 492 {
-                (client.right - theme.px(140)).max(theme.px(170))
+                width - theme.px(140)
             } else {
                 theme.px(item.x)
             };
             let y = if item.page == 4 && item.y == 492 {
-                (client.bottom - theme.px(52)).max(theme.px(492))
+                height - theme.px(52)
             } else {
                 theme.px(item.y)
             };
             let _ = MoveWindow(
                 item.window,
-                x,
-                y,
+                x - offsets[0],
+                y - offsets[1],
                 theme.px(item.width),
                 theme.px(item.height),
                 true,
@@ -677,7 +811,7 @@ unsafe extern "system" fn procedure(
                     } else {
                         SendMessageW(HWND(lparam.0 as *mut _), BM_GETCHECK, None, None).0
                     };
-                    if (210..243).contains(&id) && id != RECEIVER {
+                    if (210..244).contains(&id) && id != RECEIVER {
                         let _ = PostMessageW(
                             Some(cell.borrow().owner),
                             EVENT,
@@ -688,7 +822,10 @@ unsafe extern "system" fn procedure(
                     return LRESULT(0);
                 }
                 WM_HSCROLL => {
-                    if let Ok(slider) = GetDlgItem(Some(window), SPEED as i32) {
+                    if lparam.0 == 0 {
+                        scroll(window, SB_HORZ, (wparam.0 & 0xffff) as i32, 0);
+                        layout(window, &cell.borrow());
+                    } else if let Ok(slider) = GetDlgItem(Some(window), SPEED as i32) {
                         let value = SendMessageW(slider, WM_USER, None, None).0;
                         let _ = PostMessageW(
                             Some(cell.borrow().owner),
@@ -697,6 +834,27 @@ unsafe extern "system" fn procedure(
                             LPARAM(value),
                         );
                     }
+                    return LRESULT(0);
+                }
+                WM_VSCROLL => {
+                    scroll(window, SB_VERT, (wparam.0 & 0xffff) as i32, 0);
+                    layout(window, &cell.borrow());
+                    return LRESULT(0);
+                }
+                WM_MOUSEWHEEL => {
+                    let steps = ((wparam.0 >> 16) as u16 as i16) as i32;
+                    scroll(
+                        window,
+                        SB_VERT,
+                        -1,
+                        -steps * theme::current(window).px(48) / 120,
+                    );
+                    layout(window, &cell.borrow());
+                    return LRESULT(0);
+                }
+                REVEAL_FOCUS => {
+                    reveal(window, HWND(lparam.0 as *mut c_void));
+                    layout(window, &cell.borrow());
                     return LRESULT(0);
                 }
                 WM_CLOSE => {
@@ -733,6 +891,95 @@ unsafe extern "system" fn procedure(
         DefWindowProcW(window, message, wparam, lparam)
     }
 }
+fn scroll(window: HWND, bar: SCROLLBAR_CONSTANTS, command: i32, delta: i32) {
+    // SAFETY: Window owns both native scrollbars; structure sizes and masks are initialized.
+    unsafe {
+        let mut info = SCROLLINFO {
+            cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_ALL,
+            ..Default::default()
+        };
+        if GetScrollInfo(window, bar, &mut info).is_err() {
+            return;
+        }
+        let step = theme::current(window).px(32);
+        info.nPos = match command {
+            0 => info.nPos - step,
+            1 => info.nPos + step,
+            2 => info.nPos - info.nPage as i32,
+            3 => info.nPos + info.nPage as i32,
+            4 | 5 => info.nTrackPos,
+            6 => info.nMin,
+            7 => info.nMax,
+            -1 => info.nPos + delta,
+            _ => info.nPos,
+        };
+        info.fMask = SIF_POS;
+        SetScrollInfo(window, bar, &info, true);
+    }
+}
+fn reveal(window: HWND, child: HWND) {
+    // SAFETY: Child was supplied by an owned subclass; validate parent before querying geometry.
+    unsafe {
+        if GetParent(child).ok() != Some(window) {
+            return;
+        }
+        let mut bounds = RECT::default();
+        let mut client = RECT::default();
+        if GetWindowRect(child, &mut bounds).is_err() || GetClientRect(window, &mut client).is_err()
+        {
+            return;
+        }
+        let mut origin = windows::Win32::Foundation::POINT::default();
+        if !windows::Win32::Graphics::Gdi::ClientToScreen(window, &mut origin).as_bool() {
+            return;
+        }
+        let left = bounds.left - origin.x;
+        let top = bounds.top - origin.y;
+        let right = bounds.right - origin.x;
+        let bottom = bounds.bottom - origin.y;
+        let dx = if left < 8 {
+            left - 8
+        } else if right > client.right - 8 {
+            right - client.right + 8
+        } else {
+            0
+        };
+        let dy = if top < 8 {
+            top - 8
+        } else if bottom > client.bottom - 8 {
+            bottom - client.bottom + 8
+        } else {
+            0
+        };
+        scroll(window, SB_HORZ, -1, dx);
+        scroll(window, SB_VERT, -1, dy);
+    }
+}
+unsafe extern "system" fn focus_child(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    owner: usize,
+) -> LRESULT {
+    // SAFETY: Subclass data is our live parent HWND. Posted focus messages carry no borrowed allocation.
+    unsafe {
+        if message == WM_SETFOCUS {
+            let _ = PostMessageW(
+                Some(HWND(owner as *mut c_void)),
+                REVEAL_FOCUS,
+                WPARAM(0),
+                LPARAM(window.0 as isize),
+            );
+        }
+        if message == WM_NCDESTROY {
+            let _ = RemoveWindowSubclass(window, Some(focus_child), id);
+        }
+        DefSubclassProc(window, message, wparam, lparam)
+    }
+}
 impl Drop for Panel {
     fn drop(&mut self) {
         // SAFETY: Destroy synchronously before freeing the stable context pointer.
@@ -740,5 +987,32 @@ impl Drop for Panel {
             let _ = DestroyWindow(self.window);
         }
         theme::forget(self.window);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pairing_guidance_requires_started_and_wda_is_separate() {
+        let mut config = Config {
+            control_enabled: true,
+            ..Config::default()
+        };
+        let mut input = control::Snapshot::default();
+        for status in ["NOT_REQUESTED", "CREATED", "ABORTED", "STOPPED"] {
+            input.ble.advertising_status = status.into();
+            assert!(!control_guidance(&config, &input).contains("Pair"));
+        }
+        input.ble.advertising_status = "STARTED".into();
+        assert!(control_guidance(&config, &input).contains("Pair"));
+        config.advanced = true;
+        config.control = ControlChoice::Wda;
+        assert!(!control_guidance(&config, &input).contains("Bluetooth"));
+        input.mode = 2;
+        input.ready = true;
+        assert_eq!(
+            control_guidance(&config, &input),
+            "Advanced control connected."
+        );
     }
 }

@@ -119,9 +119,12 @@ struct Ui {
     gesture: Gesture,
     surrogate: Option<u16>,
     smoke: bool,
+    smoke_error: Option<String>,
     started: Instant,
     appearance: Option<AppearanceWatch>,
     last_geometry: (u32, u32),
+    last_home: bool,
+    recent_errors: std::collections::VecDeque<String>,
     last_theme_refresh: Instant,
 }
 struct WindowLifetime<'a> {
@@ -325,6 +328,22 @@ impl Ui {
         if let Ok(input) = self.control.snapshots.try_recv() {
             self.input = input;
         }
+        self.input.ready = self.control.is_ready();
+        for message in [
+            self.input.ble_error.as_deref(),
+            self.input.diagnostics_error.as_deref(),
+            Some(self.video.error.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            crate::diagnostics::remember(&mut self.recent_errors, message);
+        }
+        let home = self.control.capabilities().home && self.input.geometry.is_some();
+        if home != self.last_home {
+            self.last_home = home;
+            layout(self);
+        }
         if let Some(panel) = &mut self.diagnostics {
             panel.update(&self.input);
         }
@@ -353,6 +372,11 @@ impl Ui {
             theme::refresh(self.window);
         }
         if self.smoke && self.started.elapsed().as_millis() > 1500 {
+            if let Some(panel) = &self.settings
+                && let Err(error) = panel.validate_navigation()
+            {
+                self.smoke_error = Some(error);
+            }
             let args: Vec<_> = std::env::args().collect();
             if let Some(index) = args.iter().position(|a| a == "--ui-snapshot")
                 && let Some(path) = args.get(index + 1)
@@ -363,7 +387,7 @@ impl Ui {
                     .map(settings::Panel::handle)
                     .unwrap_or(self.window);
                 if let Err(error) = crate::ui_snapshot::save(target, std::path::Path::new(path)) {
-                    eprintln!("UI snapshot failed: {error}");
+                    self.smoke_error = Some(format!("UI snapshot failed: {error}"));
                 }
             }
             // SAFETY: Scalar close request to our own window.
@@ -449,6 +473,20 @@ impl Ui {
                 self.open_diagnostics();
                 return;
             }
+            settings::COPY_DIAGNOSTICS => {
+                self.input.ready = self.control.is_ready();
+                let mut report = crate::diagnostics::report(
+                    &self.input,
+                    &self.video,
+                    &self.control.diagnostics,
+                    &self.recent_errors,
+                );
+                report["connection_preference"] = serde_json::json!(self.config.connection);
+                if let Err(error) = crate::diagnostics::copy(self.window, &report) {
+                    self.error(&format!("Could not copy diagnostics: {error}"));
+                }
+                return;
+            }
             settings::WDA if self.config.advanced => {
                 self.config.control = ControlChoice::Wda;
                 self.set_control(true);
@@ -502,9 +540,12 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         gesture: Gesture::default(),
         surrogate: None,
         smoke,
+        smoke_error: None,
         started: Instant::now(),
         appearance: None,
         last_geometry: (0, 0),
+        last_home: false,
+        recent_errors: std::collections::VecDeque::new(),
         last_theme_refresh: Instant::now(),
     }));
     // SAFETY: All HWND creation/dispatch stays on this thread; state allocation is stable until worker shutdown and window destruction.
@@ -720,6 +761,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     }
+    if let Some(error) = state.borrow_mut().smoke_error.take() {
+        return Err(error.into());
+    }
     Ok(())
 }
 fn layout(ui: &Ui) {
@@ -891,6 +935,7 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
         } else if message == WM_CHAR
             && ui.control.backend() == Backend::Wda
             && ui.config.control_enabled
+            && ui.control.is_ready()
         {
             let unit = wparam.0 as u16;
             if (0xd800..=0xdbff).contains(&unit) {
