@@ -886,6 +886,16 @@ unsafe extern "system" fn procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_MOUSEACTIVATE {
+        crate::ui_input::modality(false);
+        return LRESULT(MA_ACTIVATE as isize);
+    }
+    if message == WM_USER {
+        return crate::ui_input::default_button(window);
+    }
+    if message == WM_USER + 1 {
+        return LRESULT(1);
+    }
     if let Some(result) = theme::paint_message(window, message, wparam, lparam) {
         return result;
     }

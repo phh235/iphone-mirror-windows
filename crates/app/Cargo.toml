@@ -8,6 +8,10 @@ license.workspace = true
 name = "iMirror"
 path = "src/main.rs"
 
+[features]
+default = []
+ui-input-trace = []
+
 [dependencies]
 imirror-video-airplay = { path = "../video-airplay" }
 imirror-device = { path = "../device" }

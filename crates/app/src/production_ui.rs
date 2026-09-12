@@ -41,6 +41,7 @@ const DEVICE_LABEL: usize = 118;
 const STATUS_LABEL: usize = 119;
 const EMPTY: usize = 120;
 const THEME_CHANGED: u32 = WM_APP + 71;
+const EXECUTE_UI_COMMAND: u32 = WM_APP + 95;
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -482,6 +483,7 @@ impl Ui {
                     &self.recent_errors,
                 );
                 report["connection_preference"] = serde_json::json!(self.config.connection);
+                report["ui_input"] = crate::ui_input::snapshot();
                 if let Err(error) = crate::diagnostics::copy(self.window, &report) {
                     self.error(&format!("Could not copy diagnostics: {error}"));
                 }
@@ -507,6 +509,8 @@ impl Ui {
     }
 }
 pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(debug_assertions, feature = "ui-input-trace"))]
+    let _ui_trace = crate::ui_input::TraceGuard::start()?;
     let _mta = imirror_platform_windows::Mta::new()?;
     // SAFETY: Set once before creating windows; an embedded PerMonitorV2 manifest may have set it already.
     unsafe {
@@ -721,6 +725,12 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
         if smoke {
             let args: Vec<_> = std::env::args().collect();
+            if let Some(index) = args.iter().position(|a| a == "--ui-test-focus")
+                && let Some(mode) = args.get(index + 1)
+            {
+                crate::ui_input::modality(mode == "keyboard");
+                let _ = SetFocus(Some(state.borrow().settings_button));
+            }
             if let Some(index) = args.iter().position(|a| a == "--ui-settings-page")
                 && let Some(page) = args.get(index + 1).and_then(|p| p.parse::<usize>().ok())
             {
@@ -744,14 +754,19 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
                 .as_ref()
                 .map(settings::Panel::handle);
             let focus = GetFocus();
-            let in_settings = panel.is_some_and(|panel| {
-                IsWindowVisible(panel).as_bool()
-                    && (focus == panel || IsChild(panel, focus).as_bool())
-                    && IsDialogMessageW(panel, &message).as_bool()
-            });
+            crate::ui_input::observe_message(&message);
+            let keyboard = (WM_KEYFIRST..=WM_KEYLAST).contains(&message.message);
+            let in_settings = keyboard
+                && panel.is_some_and(|panel| {
+                    IsWindowVisible(panel).as_bool()
+                        && (focus == panel || IsChild(panel, focus).as_bool())
+                        && IsDialogMessageW(panel, &message).as_bool()
+                });
             let preview = state.borrow().preview;
-            let in_main =
-                !in_settings && focus != preview && IsDialogMessageW(window, &message).as_bool();
+            let in_main = keyboard
+                && !in_settings
+                && focus != preview
+                && IsDialogMessageW(window, &message).as_bool();
             if !in_settings && !in_main {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -894,9 +909,13 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
     // SAFETY: Input capture/focus geometry operations refer only to this UI's windows.
     unsafe {
         if message == WM_KILLFOCUS || (message == WM_KEYDOWN && wparam.0 == 0x1b) {
+            crate::ui_input::record(ui.preview, crate::ui_input::PREVIEW_FOCUS_LOST, 0);
+            if message == WM_KILLFOCUS && GetFocus() == ui.preview {
+                return;
+            }
             ui.control.release();
             ui.gesture.cancel();
-            let _ = ReleaseCapture();
+            crate::ui_input::release_capture_if_owned(ui.preview);
             return;
         }
         if message == WM_KEYDOWN
@@ -931,7 +950,7 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
             if let Some(action) = ui.gesture.release(map(ui, point), Instant::now()) {
                 ui.control.send(control::Command::Action(action));
             }
-            let _ = ReleaseCapture();
+            crate::ui_input::release_capture_if_owned(ui.preview);
         } else if message == WM_CHAR
             && ui.control.backend() == Backend::Wda
             && ui.config.control_enabled
@@ -1012,6 +1031,34 @@ unsafe extern "system" fn window_proc(
     }
     // SAFETY: Userdata points to the stable RefCell in run(). try_borrow_mut prevents Win32 reentrant aliasing.
     unsafe {
+        if message == WM_MOUSEACTIVATE {
+            crate::ui_input::modality(false);
+            return LRESULT(MA_ACTIVATE as isize);
+        }
+        // IsDialogMessage remains the keyboard activation implementation; custom
+        // top-level windows supply the same default-button contract as a dialog.
+        if message == WM_USER {
+            return crate::ui_input::default_button(window);
+        }
+        if message == WM_USER + 1 {
+            return LRESULT(1);
+        }
+        if message == WM_COMMAND
+            && [CONNECT, ROTATE, CONTROL, HOME, FULL, SETTINGS].contains(&(wparam.0 & 0xffff))
+        {
+            let id = wparam.0 & 0xffff;
+            let native = crate::ui_input::native_click(window, wparam, lparam);
+            let fullscreen_shortcut = id == FULL && lparam.0 == 0 && wparam.0 >> 16 == 0;
+            if native || fullscreen_shortcut {
+                if native {
+                    crate::ui_input::record(HWND(lparam.0 as *mut c_void), WM_COMMAND, wparam.0);
+                }
+                // Exactly one dispatch, after the native BUTTON callback unwinds.
+                // This is command delivery, not a retry or synthesized click.
+                let _ = PostMessageW(Some(window), EXECUTE_UI_COMMAND, wparam, lparam);
+            }
+            return LRESULT(0);
+        }
         if message == WM_NCCREATE {
             let create = &*(lparam.0 as *const CREATESTRUCTW);
             SetWindowLongPtrW(window, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -1044,8 +1091,17 @@ unsafe extern "system" fn window_proc(
                     ui.control.release();
                     return LRESULT(0);
                 }
-                WM_COMMAND => {
+                WM_COMMAND | EXECUTE_UI_COMMAND => {
                     let id = wparam.0 & 0xffff;
+                    if message == EXECUTE_UI_COMMAND
+                        && let Ok(button) = GetDlgItem(Some(window), id as i32)
+                    {
+                        crate::ui_input::record(
+                            button,
+                            crate::ui_input::COMMAND_EXECUTED,
+                            usize::from(id == CONNECT && ui.video.active),
+                        );
+                    }
                     match id {
                         CONNECT => {
                             if ui.video.active {

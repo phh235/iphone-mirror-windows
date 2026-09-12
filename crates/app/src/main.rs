@@ -12,6 +12,7 @@ mod settings_window;
 mod theme;
 #[path = "production_ui.rs"]
 mod ui;
+mod ui_input;
 mod ui_snapshot;
 mod worker;
 use imirror_native_core::Engine;

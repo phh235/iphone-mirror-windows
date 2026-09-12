@@ -110,6 +110,21 @@ unsafe extern "system" fn button_proc(
     // SAFETY: This is a registered subclass of our BUTTON control; call DefSubclassProc for native behavior.
     unsafe {
         match message {
+            WM_MOUSEACTIVATE | WM_LBUTTONDOWN => {
+                crate::ui_input::modality(false);
+                crate::ui_input::record(window, message, lparam.0 as usize);
+            }
+            WM_LBUTTONUP | WM_CAPTURECHANGED | WM_SETFOCUS | WM_KILLFOCUS | BM_SETSTATE => {
+                crate::ui_input::record(
+                    window,
+                    message,
+                    if matches!(message, WM_LBUTTONUP | WM_CAPTURECHANGED) {
+                        lparam.0 as usize
+                    } else {
+                        wparam.0
+                    },
+                );
+            }
             WM_MOUSEMOVE => {
                 if GetWindowLongPtrW(window, GWLP_USERDATA) & 2 == 0 {
                     SetWindowLongPtrW(
@@ -349,8 +364,10 @@ fn custom_draw(parent: HWND, lparam: LPARAM) -> Option<LRESULT> {
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
         SelectObject(draw.hdc, font);
-        if windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == window {
-            let _ = DrawFocusRect(draw.hdc, &text_rect);
+        if crate::ui_input::keyboard_focus_visible()
+            && windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == window
+        {
+            appearance.focus_outline(draw.hdc, &rect, foreground);
         }
         Some(LRESULT(CDRF_SKIPDEFAULT as isize))
     }
@@ -531,7 +548,8 @@ impl Theme {
     pub fn draw_button(&self, draw: &DRAWITEMSTRUCT, active: bool, hover: bool) {
         let disabled = draw.itemState.0 & ODS_DISABLED.0 != 0;
         let pressed = draw.itemState.0 & ODS_SELECTED.0 != 0;
-        let focused = draw.itemState.0 & ODS_FOCUS.0 != 0;
+        let focused =
+            draw.itemState.0 & ODS_FOCUS.0 != 0 && crate::ui_input::keyboard_focus_visible();
         let fill = if disabled {
             self.background
         } else if active {
@@ -586,15 +604,31 @@ impl Theme {
             );
             SelectObject(draw.hDC, old_font);
             if focused {
-                let inset = self.px(3);
-                let focus = RECT {
-                    left: r.left + inset,
-                    top: r.top + inset,
-                    right: r.right - inset,
-                    bottom: r.bottom - inset,
-                };
-                let _ = DrawFocusRect(draw.hDC, &focus);
+                self.focus_outline(draw.hDC, &r, foreground);
             }
+        }
+    }
+    fn focus_outline(&self, dc: HDC, rect: &RECT, color: COLORREF) {
+        // SAFETY: The outline stays inside the existing control bounds. Restore
+        // selected GDI objects before freeing the temporary solid pen.
+        unsafe {
+            let inset = self.px(3);
+            let radius = self.px(6);
+            let pen = CreatePen(PS_SOLID, self.px(2).max(1), color);
+            let previous_pen = SelectObject(dc, pen.into());
+            let previous_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            let _ = RoundRect(
+                dc,
+                rect.left + inset,
+                rect.top + inset,
+                rect.right - inset,
+                rect.bottom - inset,
+                radius * 2,
+                radius * 2,
+            );
+            SelectObject(dc, previous_brush);
+            SelectObject(dc, previous_pen);
+            let _ = DeleteObject(pen.into());
         }
     }
 }
