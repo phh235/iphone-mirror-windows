@@ -2,14 +2,14 @@
 use crate::{
     ble_panel,
     control::{self, Backend, ControlManager},
-    settings_window as settings, theme,
+    settings_window as settings, theme, toolbar,
     worker::{self, Worker},
 };
 use imirror_coordinate_map::{Mapper, Point, Rect, Rotation, ScaleMode, Size};
 use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice};
 use imirror_input_core::{Button, Gesture, Input};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::c_void,
     sync::{
         Arc,
@@ -40,20 +40,27 @@ const SETTINGS: usize = 117;
 const DEVICE_LABEL: usize = 118;
 const STATUS_LABEL: usize = 119;
 const EMPTY: usize = 120;
+const MORE: usize = 121;
 const THEME_CHANGED: u32 = WM_APP + 71;
 const EXECUTE_UI_COMMAND: u32 = WM_APP + 95;
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 fn label(window: HWND, s: &str) {
-    let text = wide(s); // SAFETY: UI-owned handle; native control copies the text synchronously.
+    let _ = label_changed(window, s);
+}
+fn label_changed(window: HWND, s: &str) -> bool {
+    // SAFETY: UI-owned handle; avoid allocating text when the existing label is unchanged.
     unsafe {
         let mut current = [0u16; 256];
         let n = GetWindowTextW(window, &mut current).max(0) as usize;
-        if current[..n] != text[..text.len() - 1] {
-            let _ = SetWindowTextW(window, PCWSTR(text.as_ptr()));
+        if current[..n].iter().copied().eq(s.encode_utf16()) {
+            return false;
         }
+        let text = wide(s);
+        let _ = SetWindowTextW(window, PCWSTR(text.as_ptr()));
     }
+    true
 }
 struct AppearanceWatch {
     settings: UISettings,
@@ -106,6 +113,9 @@ struct Ui {
     home: HWND,
     full: HWND,
     settings_button: HWND,
+    more: HWND,
+    tooltips: Option<toolbar::Tooltips>,
+    overflow_actions: Cell<bool>,
     worker: Worker,
     video: worker::Snapshot,
     control: ControlManager,
@@ -126,7 +136,6 @@ struct Ui {
     last_geometry: (u32, u32),
     last_home: bool,
     recent_errors: std::collections::VecDeque<String>,
-    last_theme_refresh: Instant,
 }
 struct WindowLifetime<'a> {
     window: HWND,
@@ -141,6 +150,7 @@ impl Drop for WindowLifetime<'_> {
             ui.worker.stop();
             ui.settings = None;
             ui.diagnostics = None;
+            ui.tooltips = None;
         }
         // SAFETY: Workers have released the preview; userdata is cleared before destroying the UI.
         unsafe {
@@ -151,6 +161,104 @@ impl Drop for WindowLifetime<'_> {
     }
 }
 impl Ui {
+    fn main_action(&mut self, id: usize) {
+        // SAFETY: Main action IDs refer to controls owned for the entire window lifetime.
+        if let Ok(button) = unsafe { GetDlgItem(Some(self.window), id as i32) } {
+            crate::ui_input::record(
+                button,
+                crate::ui_input::COMMAND_EXECUTED,
+                usize::from(id == CONNECT && self.video.active),
+            );
+        }
+        match id {
+            CONNECT => {
+                if self.video.active {
+                    self.control.release();
+                    self.wanted = false;
+                    self.command(worker::Command::Disconnect);
+                } else {
+                    self.connect_device();
+                }
+            }
+            ROTATE => {
+                self.control.release();
+                self.rotation = (self.rotation + 1) % 4;
+                self.command(worker::Command::Rotate(
+                    self.preview.0 as usize,
+                    self.rotation,
+                ));
+                layout(self);
+            }
+            CONTROL => {
+                let enabled = !self.config.control_enabled;
+                self.set_control(enabled);
+                if enabled && !self.control.is_ready() {
+                    self.open_settings(1);
+                }
+            }
+            HOME if self.control.capabilities().home => {
+                self.control
+                    .send(control::Command::Action(Input::Button(Button::Home)));
+            }
+            FULL => fullscreen(self),
+            SETTINGS => self.open_settings(0),
+            _ => {}
+        }
+    }
+    fn overflow_menu(&mut self) {
+        self.control.release();
+        // SAFETY: Native popup owns no borrowed strings after AppendMenuW; menu is
+        // destroyed after selection. The selected action is dispatched once, never as a fake click.
+        unsafe {
+            let menu = match CreatePopupMenu() {
+                Ok(menu) => menu,
+                Err(error) => {
+                    self.error(&error.to_string());
+                    return;
+                }
+            };
+            let result = (|| -> windows::core::Result<usize> {
+                if self.overflow_actions.get() {
+                    let text = wide(if self.video.active {
+                        "Disconnect"
+                    } else {
+                        "Connect"
+                    });
+                    AppendMenuW(menu, MF_STRING, CONNECT, PCWSTR(text.as_ptr()))?;
+                    AppendMenuW(
+                        menu,
+                        if self.video.status.state == 4 {
+                            MF_STRING
+                        } else {
+                            MF_STRING | MF_GRAYED
+                        },
+                        ROTATE,
+                        w!("Rotate"),
+                    )?;
+                }
+                if self.control.capabilities().home && self.input.geometry.is_some() {
+                    AppendMenuW(menu, MF_STRING, HOME, w!("Home"))?;
+                }
+                let mut rect = RECT::default();
+                GetWindowRect(self.more, &mut rect)?;
+                Ok(TrackPopupMenuEx(
+                    menu,
+                    (TPM_RETURNCMD | TPM_RIGHTALIGN).0,
+                    rect.right,
+                    rect.bottom,
+                    self.window,
+                    None,
+                )
+                .0 as usize)
+            })();
+            let _ = DestroyMenu(menu);
+            match result {
+                Ok(0) => {}
+                Ok(id) => self.main_action(id),
+                Err(error) => self.error(&error.to_string()),
+            }
+        }
+    }
     fn command(&self, command: worker::Command) {
         if self.worker.commands.try_send(command).is_err() {
             label(self.status_label, "A connection operation is in progress");
@@ -247,11 +355,11 @@ impl Ui {
             .devices
             .get(self.selected)
             .or_else(|| self.video.devices.first());
-        label(
+        let name_changed = label_changed(
             self.device_label,
             device.map(|d| d.name.as_str()).unwrap_or("iPhone"),
         );
-        label(
+        let status_changed = label_changed(
             self.status_label,
             if self.video.status.state == 4 {
                 "Connected"
@@ -281,7 +389,55 @@ impl Ui {
                 "Control"
             },
         );
-        theme::set_active(self.control_button, self.config.control_enabled);
+        let captured = self.control.mailbox.captured.load(Ordering::Acquire);
+        toolbar::set_control_state(self.control_button, self.config.control_enabled, captured);
+        toolbar::set_icon(
+            self.connect,
+            if self.video.active {
+                toolbar::Icon::Disconnect
+            } else {
+                toolbar::Icon::Connect
+            },
+        );
+        toolbar::set_icon(
+            self.full,
+            if self.fullscreen.is_some() {
+                toolbar::Icon::Restore
+            } else {
+                toolbar::Icon::Fullscreen
+            },
+        );
+        if let Some(tips) = &self.tooltips {
+            tips.set(
+                self.connect,
+                if self.video.active {
+                    "Disconnect"
+                } else {
+                    "Connect"
+                },
+            );
+            tips.set(self.rotate, "Rotate");
+            tips.set(
+                self.control_button,
+                if captured {
+                    "Control active — Ctrl+Alt+Q to release"
+                } else if self.config.control_enabled && !self.control.is_ready() {
+                    "Control iPhone — waiting for connection"
+                } else {
+                    "Control iPhone"
+                },
+            );
+            tips.set(
+                self.full,
+                if self.fullscreen.is_some() {
+                    "Exit fullscreen"
+                } else {
+                    "Fullscreen"
+                },
+            );
+            tips.set(self.settings_button, "Settings");
+            tips.set(self.more, "More actions");
+        }
         let capabilities = self.control.capabilities();
         // SAFETY: This thread owns each control. Unsupported actions are hidden rather than silently ignored.
         unsafe {
@@ -293,14 +449,7 @@ impl Ui {
                     SW_HIDE
                 },
             );
-            let _ = ShowWindow(
-                self.home,
-                if capabilities.home && self.input.geometry.is_some() {
-                    SW_SHOW
-                } else {
-                    SW_HIDE
-                },
-            );
+            let _ = ShowWindow(self.home, SW_HIDE); // Home remains available through the overflow menu when supported.
             let _ = EnableWindow(self.rotate, self.video.status.state == 4);
             let _ = EnableWindow(
                 self.control_button,
@@ -324,6 +473,9 @@ impl Ui {
                 "Connect your iPhone by USB and unlock it.\nChoose Wireless in Settings to connect over Wi-Fi."
             },
         );
+        if name_changed || status_changed {
+            layout(self);
+        }
     }
     fn update(&mut self) {
         if let Ok(input) = self.control.snapshots.try_recv() {
@@ -366,11 +518,6 @@ impl Ui {
         self.refresh_labels();
         if let Some(panel) = &mut self.settings {
             panel.update(&self.config, &self.input, &self.video.devices);
-        }
-        // WM_SETTINGCHANGE and UISettings are primary; a low-rate fallback handles missed broadcasts.
-        if self.last_theme_refresh.elapsed().as_secs() >= 30 {
-            self.last_theme_refresh = Instant::now();
-            theme::refresh(self.window);
         }
         if self.smoke && self.started.elapsed().as_millis() > 1500 {
             if let Some(panel) = &self.settings
@@ -512,6 +659,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(debug_assertions, feature = "ui-input-trace"))]
     let _ui_trace = crate::ui_input::TraceGuard::start()?;
     let _mta = imirror_platform_windows::Mta::new()?;
+    if let Err(error) = crate::svg_icons::initialize() {
+        tracing::warn!(%error, "Native SVG icon initialization failed; retaining native button labels");
+    }
     // SAFETY: Set once before creating windows; an embedded PerMonitorV2 manifest may have set it already.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -530,6 +680,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         home: HWND::default(),
         full: HWND::default(),
         settings_button: HWND::default(),
+        more: HWND::default(),
+        tooltips: None,
+        overflow_actions: Cell::new(false),
         worker: Worker::start(config.clone())?,
         video: worker::Snapshot::default(),
         control: ControlManager::start()?,
@@ -550,7 +703,6 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         last_geometry: (0, 0),
         last_home: false,
         recent_errors: std::collections::VecDeque::new(),
-        last_theme_refresh: Instant::now(),
     }));
     // SAFETY: All HWND creation/dispatch stays on this thread; state allocation is stable until worker shutdown and window destruction.
     unsafe {
@@ -671,6 +823,7 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
             ui.home = make(HOME, "Home", w!("BUTTON"), button, window)?;
             ui.rotate = make(ROTATE, "Rotate", w!("BUTTON"), button, window)?;
             ui.control_button = make(CONTROL, "Control", w!("BUTTON"), button, window)?;
+            ui.more = make(MORE, "More actions", w!("BUTTON"), button, window)?;
             for child in [
                 ui.connect,
                 ui.settings_button,
@@ -678,9 +831,21 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
                 ui.home,
                 ui.rotate,
                 ui.control_button,
+                ui.more,
             ] {
                 theme::style_button(child);
             }
+            for (button, icon) in [
+                (ui.connect, toolbar::Icon::Connect),
+                (ui.rotate, toolbar::Icon::Rotate),
+                (ui.control_button, toolbar::Icon::Control),
+                (ui.full, toolbar::Icon::Fullscreen),
+                (ui.settings_button, toolbar::Icon::Settings),
+                (ui.more, toolbar::Icon::More),
+            ] {
+                toolbar::set_icon(button, icon);
+            }
+            ui.tooltips = Some(toolbar::Tooltips::new(window)?);
             ui.host = make(
                 0,
                 "",
@@ -705,7 +870,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
             ui.appearance = AppearanceWatch::new(window).ok();
         }
         let appearance = theme::refresh(window);
-        appearance.set_font(state.borrow().device_label, true);
+        appearance.apply_fonts(window);
+        appearance.text_style(state.borrow().device_label, 3);
+        appearance.text_style(state.borrow().status_label, 2);
         layout(&state.borrow());
         state.borrow().refresh_labels();
         SetTimer(Some(window), 1, 200, None);
@@ -728,8 +895,8 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(index) = args.iter().position(|a| a == "--ui-test-focus")
                 && let Some(mode) = args.get(index + 1)
             {
-                crate::ui_input::modality(mode == "keyboard");
                 let _ = SetFocus(Some(state.borrow().settings_button));
+                crate::ui_input::modality(mode == "keyboard");
             }
             if let Some(index) = args.iter().position(|a| a == "--ui-settings-page")
                 && let Some(page) = args.get(index + 1).and_then(|p| p.parse::<usize>().ok())
@@ -795,31 +962,86 @@ fn layout(ui: &Ui) {
         }
         let width = bounds.right;
         let height = bounds.bottom;
-        let top = px(64);
-        let bottom = px(64);
-        for (window, x, y, w, h) in [
-            (
-                ui.device_label,
-                px(16),
-                px(9),
-                (width - px(322)).max(px(64)),
-                px(25),
-            ),
-            (
-                ui.status_label,
-                px(16),
-                px(35),
-                (width - px(322)).max(px(64)),
-                px(22),
-            ),
-            (ui.connect, width - px(298), px(14), px(90), px(36)),
-            (ui.settings_button, width - px(200), px(14), px(86), px(36)),
-            (ui.full, width - px(106), px(14), px(90), px(36)),
+        let measure = |window: HWND, font: HFONT| {
+            let mut text = [0u16; 256];
+            let n = GetWindowTextW(window, &mut text).max(0) as usize;
+            let dc = GetDC(Some(ui.window));
+            if dc.0.is_null() {
+                return px(80);
+            }
+            let old = SelectObject(dc, font.into());
+            let mut size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(dc, &text[..n], &mut size);
+            SelectObject(dc, old);
+            ReleaseDC(Some(ui.window), dc);
+            size.cx
+        };
+        let device_width = measure(ui.device_label, appearance.strong);
+        let status_width = measure(ui.status_label, appearance.small);
+        let home = ui.control.capabilities().home && ui.input.geometry.is_some();
+        let bar = toolbar::layout(width, appearance.dpi, device_width, status_width, home);
+        ui.overflow_actions.set(bar.overflow);
+        let top = bar.height;
+        let mut action_x = bar.actions_left;
+        for (button, visible) in [
+            (ui.more, bar.more),
+            (ui.connect, !bar.overflow),
+            (ui.rotate, !bar.overflow),
+            (ui.control_button, true),
+            (ui.full, true),
+            (ui.settings_button, true),
         ] {
-            let _ = MoveWindow(window, x, y, w, h, true);
+            let _ = ShowWindow(button, if visible { SW_SHOWNA } else { SW_HIDE });
+            if visible {
+                let _ = MoveWindow(
+                    button,
+                    action_x,
+                    (top - bar.button) / 2,
+                    bar.button,
+                    bar.button,
+                    true,
+                );
+                action_x += bar.button + bar.gap;
+            }
+        }
+        if bar.stacked {
+            let _ = MoveWindow(
+                ui.device_label,
+                bar.padding,
+                px(5),
+                bar.text_width,
+                px(22),
+                true,
+            );
+            let _ = MoveWindow(
+                ui.status_label,
+                bar.padding,
+                px(28),
+                bar.text_width,
+                px(18),
+                true,
+            );
+        } else {
+            let _ = MoveWindow(
+                ui.device_label,
+                bar.padding,
+                (top - px(22)) / 2,
+                device_width,
+                px(22),
+                true,
+            );
+            let offset = device_width + px(12);
+            let _ = MoveWindow(
+                ui.status_label,
+                bar.padding + offset,
+                (top - px(18)) / 2,
+                (bar.text_width - offset).max(1),
+                px(18),
+                true,
+            );
         }
         let viewport_width = width.max(1);
-        let viewport_height = (height - top - bottom).max(1);
+        let viewport_height = (height - top).max(1);
         let _ = MoveWindow(ui.host, 0, top, viewport_width, viewport_height, true);
         let (mut source_width, mut source_height) =
             (ui.video.status.width as f64, ui.video.status.height as f64);
@@ -839,20 +1061,7 @@ fn layout(ui: &Ui) {
             (0, 0, viewport_width, viewport_height)
         };
         let _ = MoveWindow(ui.preview, x, y, w, h, true);
-        let home = ui.control.capabilities().home && ui.input.geometry.is_some();
-        let count = if home { 3 } else { 2 };
-        let total = px(count * 104 + (count - 1) * 8);
-        let start = (width - total) / 2;
-        let y = (height - bottom) + (bottom - px(36)) / 2;
-        let mut index = 0;
-        if home {
-            let _ = MoveWindow(ui.home, start, y, px(104), px(36), true);
-            index += 1;
-        }
-        for control in [ui.rotate, ui.control_button] {
-            let _ = MoveWindow(control, start + index * px(112), y, px(104), px(36), true);
-            index += 1;
-        }
+        let _ = ShowWindow(ui.home, SW_HIDE);
         let _ = MoveWindow(
             ui.empty,
             px(32),
@@ -1044,7 +1253,7 @@ unsafe extern "system" fn window_proc(
             return LRESULT(1);
         }
         if message == WM_COMMAND
-            && [CONNECT, ROTATE, CONTROL, HOME, FULL, SETTINGS].contains(&(wparam.0 & 0xffff))
+            && [CONNECT, ROTATE, CONTROL, HOME, FULL, SETTINGS, MORE].contains(&(wparam.0 & 0xffff))
         {
             let id = wparam.0 & 0xffff;
             let native = crate::ui_input::native_click(window, wparam, lparam);
@@ -1093,44 +1302,9 @@ unsafe extern "system" fn window_proc(
                 }
                 WM_COMMAND | EXECUTE_UI_COMMAND => {
                     let id = wparam.0 & 0xffff;
-                    if message == EXECUTE_UI_COMMAND
-                        && let Ok(button) = GetDlgItem(Some(window), id as i32)
-                    {
-                        crate::ui_input::record(
-                            button,
-                            crate::ui_input::COMMAND_EXECUTED,
-                            usize::from(id == CONNECT && ui.video.active),
-                        );
-                    }
                     match id {
-                        CONNECT => {
-                            if ui.video.active {
-                                ui.control.release();
-                                ui.wanted = false;
-                                ui.command(worker::Command::Disconnect);
-                            } else {
-                                ui.connect_device();
-                            }
-                        }
-                        ROTATE => {
-                            ui.control.release();
-                            ui.rotation = (ui.rotation + 1) % 4;
-                            ui.command(worker::Command::Rotate(ui.preview.0 as usize, ui.rotation));
-                            layout(&ui);
-                        }
-                        CONTROL => {
-                            let enabled = !ui.config.control_enabled;
-                            ui.set_control(enabled);
-                            if enabled && !ui.control.is_ready() {
-                                ui.open_settings(1);
-                            }
-                        }
-                        HOME if ui.control.capabilities().home => {
-                            ui.control
-                                .send(control::Command::Action(Input::Button(Button::Home)));
-                        }
-                        FULL => fullscreen(&mut ui),
-                        SETTINGS => ui.open_settings(0),
+                        CONNECT | ROTATE | CONTROL | HOME | FULL | SETTINGS => ui.main_action(id),
+                        MORE => ui.overflow_menu(),
                         ble_panel::MOVE_RIGHT
                         | ble_panel::MOVE_LEFT
                         | ble_panel::LEFT_CLICK
@@ -1164,7 +1338,8 @@ unsafe extern "system" fn window_proc(
                 }
                 WM_THEMECHANGED | WM_SETTINGCHANGE | THEME_CHANGED => {
                     let appearance = theme::refresh(window);
-                    appearance.set_font(ui.device_label, true);
+                    appearance.text_style(ui.device_label, 3);
+                    appearance.text_style(ui.status_label, 2);
                     layout(&ui);
                     return LRESULT(0);
                 }
@@ -1187,8 +1362,8 @@ unsafe extern "system" fn window_proc(
                 WM_GETMINMAXINFO => {
                     let info = &mut *(lparam.0 as *mut MINMAXINFO);
                     let appearance = theme::current(window);
-                    info.ptMinTrackSize.x = appearance.px(440);
-                    info.ptMinTrackSize.y = appearance.px(360);
+                    info.ptMinTrackSize.x = appearance.px(240);
+                    info.ptMinTrackSize.y = appearance.px(240);
                     return LRESULT(0);
                 }
                 WM_CLOSE => {

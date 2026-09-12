@@ -28,6 +28,8 @@ try {
     $noticeDir = Join-Path $stage 'licenses'
     Invoke-Checked python @((Join-Path $PSScriptRoot 'runtime-inventory.py'),'--runtime',(Join-Path $stage 'AirPlay'),'--output',$noticeDir)
     Copy-Item -LiteralPath (Join-Path $noticeDir 'THIRD_PARTY_LICENSES.md') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $root 'assets/fluent') -Destination (Join-Path $noticeDir 'fluent-system-icons') -Recurse
+    Add-Content -LiteralPath (Join-Path $stage 'THIRD_PARTY_LICENSES.md') -Value "`nMicrosoft Fluent System Icons Regular: MIT. See licenses/fluent-system-icons/LICENSE and README.md for the pinned SVG source and attribution."
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'README.md'),(Join-Path $root 'HUONG_DAN.md'),(Join-Path $root 'docs/VALIDATION.md') -Destination $stage
     New-Item -ItemType Directory -Force (Join-Path $stage 'docs') | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'docs/VALIDATION.md') -Destination (Join-Path $stage 'docs')

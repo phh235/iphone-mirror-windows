@@ -9,7 +9,9 @@ mod pointer_settings;
 mod raw_input;
 mod settings;
 mod settings_window;
+mod svg_icons;
 mod theme;
+mod toolbar;
 #[path = "production_ui.rs"]
 mod ui;
 mod ui_input;
@@ -18,7 +20,9 @@ mod worker;
 use imirror_native_core::Engine;
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--benchmark") {
+    if args.iter().any(|a| a == "--ui-icon-benchmark") {
+        svg_icons::benchmark()?;
+    } else if args.iter().any(|a| a == "--benchmark") {
         benchmark::run(&args)?;
     } else if args.iter().any(|a| a == "--version") {
         println!("iMirror {}", env!("CARGO_PKG_VERSION"));

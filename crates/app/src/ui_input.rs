@@ -40,6 +40,14 @@ pub fn modality(keyboard: bool) {
         unsafe {
             let focus = GetFocus();
             if !focus.0.is_null() {
+                let root = GetAncestor(focus, GA_ROOT);
+                let action = if keyboard { UIS_CLEAR } else { UIS_SET };
+                SendMessageW(
+                    root,
+                    WM_CHANGEUISTATE,
+                    Some(WPARAM(action as usize | ((UISF_HIDEFOCUS as usize) << 16))),
+                    None,
+                );
                 let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(focus), None, false);
             }
         }

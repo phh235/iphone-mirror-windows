@@ -43,7 +43,7 @@ pub fn refresh(window: HWND) -> Rc<Theme> {
         let _ = EnumChildWindows(
             Some(window),
             Some(font_child),
-            LPARAM(theme.font.0 as isize),
+            LPARAM(Rc::as_ptr(&theme) as isize),
         );
         let _ = RedrawWindow(
             Some(window),
@@ -71,10 +71,24 @@ pub fn dpi(window: HWND) -> u32 {
 unsafe extern "system" fn font_child(window: HWND, font: LPARAM) -> windows::core::BOOL {
     // SAFETY: EnumChildWindows supplies live child handles; the theme retains the font.
     unsafe {
+        let theme = &*(font.0 as *const Theme);
+        let mut class = [0u16; 20];
+        let n = GetClassNameW(window, &mut class).max(0) as usize;
+        let style = if String::from_utf16_lossy(&class[..n]).eq_ignore_ascii_case("Static") {
+            GetWindowLongPtrW(window, GWLP_USERDATA)
+        } else {
+            0
+        };
+        let selected = match style {
+            1 => theme.heading,
+            2 => theme.small,
+            3 => theme.strong,
+            _ => theme.font,
+        };
         SendMessageW(
             window,
             WM_SETFONT,
-            Some(WPARAM(font.0 as usize)),
+            Some(WPARAM(selected.0 as usize)),
             Some(LPARAM(1)),
         );
     }
@@ -95,8 +109,11 @@ pub fn set_active(window: HWND, active: bool) {
     // SAFETY: GWLP_USERDATA belongs to the buttons created by iMirror.
     unsafe {
         let flags = GetWindowLongPtrW(window, GWLP_USERDATA);
-        SetWindowLongPtrW(window, GWLP_USERDATA, (flags & !1) | isize::from(active));
-        let _ = InvalidateRect(Some(window), None, false);
+        let updated = (flags & !1) | isize::from(active);
+        if flags != updated {
+            SetWindowLongPtrW(window, GWLP_USERDATA, updated);
+            let _ = InvalidateRect(Some(window), None, false);
+        }
     }
 }
 unsafe extern "system" fn button_proc(
@@ -164,6 +181,17 @@ pub fn paint_message(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<LRESULT> {
+    if message == WM_MEASUREITEM {
+        // SAFETY: Windows supplies a writable MEASUREITEMSTRUCT for its own combo control.
+        unsafe {
+            let item = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+            if item.CtlType == ODT_COMBOBOX {
+                item.itemHeight = (24 * dpi(window) + 48) / 96;
+                return Some(LRESULT(1));
+            }
+        }
+        return None;
+    }
     if message == WM_NOTIFY {
         return custom_draw(window, lparam);
     }
@@ -184,6 +212,10 @@ pub fn paint_message(
         match message {
             WM_DRAWITEM => {
                 let draw = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                if draw.CtlType == ODT_COMBOBOX {
+                    theme.draw_combo(draw);
+                    return Some(LRESULT(1));
+                }
                 let flags = GetWindowLongPtrW(draw.hwndItem, GWLP_USERDATA);
                 theme.draw_button(draw, flags & 1 != 0, flags & 2 != 0);
                 Some(LRESULT(1))
@@ -196,7 +228,13 @@ pub fn paint_message(
             }
             _ => {
                 let dc = HDC(wparam.0 as *mut _);
-                SetTextColor(dc, theme.text);
+                let mut class = [0u16; 20];
+                let child = HWND(lparam.0 as *mut _);
+                let n = GetClassNameW(child, &mut class).max(0) as usize;
+                let secondary = message == WM_CTLCOLORSTATIC
+                    && String::from_utf16_lossy(&class[..n]).eq_ignore_ascii_case("Static")
+                    && GetWindowLongPtrW(child, GWLP_USERDATA) == 2;
+                SetTextColor(dc, if secondary { theme.muted } else { theme.text });
                 SetBkColor(dc, theme.background);
                 SetBkMode(dc, TRANSPARENT);
                 Some(LRESULT(theme.brush.0 as isize))
@@ -217,44 +255,69 @@ fn custom_draw(parent: HWND, lparam: LPARAM) -> Option<LRESULT> {
         let class_length = GetClassNameW(window, &mut class_name).max(0) as usize;
         let class = String::from_utf16_lossy(&class_name[..class_length]);
         if class.eq_ignore_ascii_case("msctls_trackbar32") {
+            if draw.dwDrawStage != CDDS_PREPAINT {
+                return None;
+            }
             let appearance = current(parent);
-            if draw.dwDrawStage == CDDS_PREPAINT {
-                return Some(LRESULT(CDRF_NOTIFYITEMDRAW as isize));
+            let mut client = RECT::default();
+            let mut channel = RECT::default();
+            let mut thumb = RECT::default();
+            let _ = GetClientRect(window, &mut client);
+            SendMessageW(
+                window,
+                TBM_GETCHANNELRECT,
+                None,
+                Some(LPARAM((&mut channel as *mut RECT) as isize)),
+            );
+            SendMessageW(
+                window,
+                TBM_GETTHUMBRECT,
+                None,
+                Some(LPARAM((&mut thumb as *mut RECT) as isize)),
+            );
+            FillRect(draw.hdc, &client, appearance.brush);
+            let middle = (thumb.top + thumb.bottom) / 2;
+            let half = appearance.px(1).max(1);
+            let old_pen = SelectObject(draw.hdc, GetStockObject(NULL_PEN));
+            let old_brush = SelectObject(draw.hdc, appearance.fill(appearance.border).into());
+            let _ = RoundRect(
+                draw.hdc,
+                channel.left,
+                middle - half,
+                channel.right,
+                middle + half,
+                half * 2,
+                half * 2,
+            );
+            let enabled =
+                windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(window).as_bool();
+            SelectObject(
+                draw.hdc,
+                appearance
+                    .fill(if enabled {
+                        appearance.accent
+                    } else {
+                        appearance.muted
+                    })
+                    .into(),
+            );
+            let center = (thumb.left + thumb.right) / 2;
+            let radius = appearance.px(5).max(2);
+            let _ = Ellipse(
+                draw.hdc,
+                center - radius,
+                middle - radius,
+                center + radius,
+                middle + radius,
+            );
+            SelectObject(draw.hdc, old_brush);
+            SelectObject(draw.hdc, old_pen);
+            if crate::ui_input::keyboard_focus_visible()
+                && windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == window
+            {
+                appearance.focus_outline(draw.hdc, &client, appearance.text);
             }
-            if draw.dwDrawStage == CDDS_ITEMPREPAINT {
-                let r = draw.rc;
-                if draw.dwItemSpec as u32 == TBCD_CHANNEL {
-                    let middle = (r.top + r.bottom) / 2;
-                    let half = appearance.px(2).max(1);
-                    let brush = CreateSolidBrush(appearance.border);
-                    let previous = SelectObject(draw.hdc, brush.into());
-                    let pen = SelectObject(draw.hdc, GetStockObject(NULL_PEN));
-                    let _ = RoundRect(
-                        draw.hdc,
-                        r.left,
-                        middle - half,
-                        r.right,
-                        middle + half,
-                        half * 2,
-                        half * 2,
-                    );
-                    SelectObject(draw.hdc, previous);
-                    SelectObject(draw.hdc, pen);
-                    let _ = DeleteObject(brush.into());
-                } else if draw.dwItemSpec as u32 == TBCD_THUMB {
-                    let brush = CreateSolidBrush(appearance.accent);
-                    let previous = SelectObject(draw.hdc, brush.into());
-                    let pen = SelectObject(draw.hdc, GetStockObject(NULL_PEN));
-                    let side = (r.right - r.left).min(r.bottom - r.top);
-                    let y = (r.top + r.bottom - side) / 2;
-                    let _ = Ellipse(draw.hdc, r.left, y, r.left + side, y + side);
-                    SelectObject(draw.hdc, previous);
-                    SelectObject(draw.hdc, pen);
-                    let _ = DeleteObject(brush.into());
-                }
-                return Some(LRESULT(CDRF_SKIPDEFAULT as isize));
-            }
-            return None;
+            return Some(LRESULT(CDRF_SKIPDEFAULT as isize));
         }
         if draw.dwDrawStage != CDDS_PREPAINT || !class.eq_ignore_ascii_case("Button") {
             return None;
@@ -386,6 +449,11 @@ pub struct Theme {
     pub brush: HBRUSH,
     pub font: HFONT,
     pub heading: HFONT,
+    pub small: HFONT,
+    pub strong: HFONT,
+    soft_accent: COLORREF,
+    brushes: Vec<(COLORREF, HBRUSH)>,
+    pens: Vec<(COLORREF, i32, HPEN)>,
     pub dpi: u32,
 }
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
@@ -474,7 +542,43 @@ impl Theme {
                 }
             };
         // SAFETY: GDI objects are owned by this theme and deleted after controls receive replacement fonts.
-        let brush = unsafe { CreateSolidBrush(background) };
+        let mix = |shift: u32| {
+            let b = (background.0 >> shift) & 255;
+            let a = (accent.0 >> shift) & 255;
+            (b * 85 + a * 15) / 100
+        };
+        let soft_accent = if high_contrast {
+            accent
+        } else {
+            COLORREF(mix(0) | (mix(8) << 8) | (mix(16) << 16))
+        };
+        let colors = [
+            background,
+            surface,
+            text,
+            muted,
+            border,
+            hover,
+            accent,
+            accent_text,
+            soft_accent,
+        ];
+        let mut brushes = Vec::new();
+        let mut pens = Vec::new();
+        for color in colors {
+            if brushes.iter().any(|(c, _)| *c == color) {
+                continue;
+            }
+            // SAFETY: Cached GDI resources are owned by Theme and destroyed after all painting stops.
+            unsafe {
+                brushes.push((color, CreateSolidBrush(color)));
+                for logical in [1, 2] {
+                    let width = ((logical * dpi + 48) / 96).max(1) as i32;
+                    pens.push((color, width, CreatePen(PS_SOLID, width, color)));
+                }
+            }
+        }
+        let brush = brushes[0].1;
         Self {
             dark,
             high_contrast,
@@ -488,12 +592,59 @@ impl Theme {
             accent_text,
             brush,
             font: font(dpi, 14, 400),
-            heading: font(dpi, 17, 600),
+            heading: font(dpi, 18, 600),
+            small: font(dpi, 12, 400),
+            strong: font(dpi, 14, 600),
+            soft_accent,
+            brushes,
+            pens,
             dpi,
         }
     }
     pub fn px(&self, n: i32) -> i32 {
         ((i64::from(n) * i64::from(self.dpi) + 48) / 96) as i32
+    }
+    fn fill(&self, color: COLORREF) -> HBRUSH {
+        self.brushes
+            .iter()
+            .find(|(c, _)| *c == color)
+            .map(|(_, b)| *b)
+            .unwrap_or(self.brush)
+    }
+    fn stroke(&self, color: COLORREF, width: i32) -> HPEN {
+        self.pens
+            .iter()
+            .find(|(c, w, _)| *c == color && *w == width)
+            .map(|(_, _, p)| *p)
+            .unwrap_or(self.pens[0].2)
+    }
+    pub fn text_style(&self, window: HWND, style: isize) {
+        // SAFETY: Caller owns this STATIC label; fonts are retained by Theme.
+        unsafe {
+            SetWindowLongPtrW(window, GWLP_USERDATA, style);
+            let font = match style {
+                1 => self.heading,
+                2 => self.small,
+                3 => self.strong,
+                _ => self.font,
+            };
+            SendMessageW(
+                window,
+                WM_SETFONT,
+                Some(WPARAM(font.0 as usize)),
+                Some(LPARAM(1)),
+            );
+        }
+    }
+    pub fn apply_fonts(&self, window: HWND) {
+        // SAFETY: Enumeration is synchronous; Theme stays live through every callback.
+        unsafe {
+            let _ = EnumChildWindows(
+                Some(window),
+                Some(font_child),
+                LPARAM((self as *const Theme) as isize),
+            );
+        }
     }
     pub fn apply_window(&self, window: HWND) {
         let dark = i32::from(self.dark && !self.high_contrast);
@@ -546,24 +697,33 @@ impl Theme {
         }
     }
     pub fn draw_button(&self, draw: &DRAWITEMSTRUCT, active: bool, hover: bool) {
+        let icon = crate::toolbar::icon(draw.hwndItem);
+        // SAFETY: Userdata on an owned BUTTON contains only iMirror's visual flags.
+        let captured = unsafe { GetWindowLongPtrW(draw.hwndItem, GWLP_USERDATA) } & 4 != 0;
+        // SAFETY: Bit 3 marks the native Settings navigation buttons.
+        let navigation = unsafe { GetWindowLongPtrW(draw.hwndItem, GWLP_USERDATA) } & 8 != 0;
         let disabled = draw.itemState.0 & ODS_DISABLED.0 != 0;
         let pressed = draw.itemState.0 & ODS_SELECTED.0 != 0;
         let focused =
             draw.itemState.0 & ODS_FOCUS.0 != 0 && crate::ui_input::keyboard_focus_visible();
         let fill = if disabled {
             self.background
-        } else if active {
+        } else if active && ((!navigation && icon.is_none()) || captured) {
             self.accent
         } else if pressed {
             self.border
+        } else if active {
+            self.soft_accent
         } else if hover {
             self.hover
+        } else if icon.is_some() || navigation {
+            self.background
         } else {
             self.surface
         };
         let foreground = if disabled {
             self.muted
-        } else if active {
+        } else if active && ((!navigation && icon.is_none()) || captured) {
             self.accent_text
         } else {
             self.text
@@ -571,12 +731,19 @@ impl Theme {
         // SAFETY: DRAWITEMSTRUCT supplies a valid HDC for this synchronous paint. All temporary objects are restored/deleted.
         unsafe {
             FillRect(draw.hDC, &draw.rcItem, self.brush);
-            let brush = CreateSolidBrush(fill);
-            let pen = CreatePen(PS_SOLID, 1, if active { self.accent } else { self.border });
+            let brush = self.fill(fill);
+            let border = if navigation || (icon.is_some() && !active && !hover && !pressed) {
+                self.background
+            } else if active {
+                self.accent
+            } else {
+                self.border
+            };
+            let pen = self.stroke(border, self.px(1).max(1));
             let old_brush = SelectObject(draw.hDC, brush.into());
             let old_pen = SelectObject(draw.hDC, pen.into());
             let r = draw.rcItem;
-            let radius = if self.high_contrast { 0 } else { self.px(8) };
+            let radius = if self.high_contrast { 0 } else { self.px(6) };
             let _ = RoundRect(
                 draw.hDC,
                 r.left,
@@ -588,8 +755,25 @@ impl Theme {
             );
             SelectObject(draw.hDC, old_brush);
             SelectObject(draw.hDC, old_pen);
-            let _ = DeleteObject(brush.into());
-            let _ = DeleteObject(pen.into());
+            if navigation && active {
+                let marker = RECT {
+                    left: r.left + self.px(2),
+                    top: r.top + self.px(10),
+                    right: r.left + self.px(4),
+                    bottom: r.bottom - self.px(10),
+                };
+                FillRect(draw.hDC, &marker, self.fill(self.accent));
+            }
+            if let Some(icon) = icon
+                && crate::svg_icons::draw(icon, draw.hDC, r, self.px(20), foreground, fill).is_ok()
+            {
+                if focused {
+                    self.focus_outline(draw.hDC, &r, foreground);
+                }
+                return;
+            }
+            // Keep the native button's accessible text available if Windows
+            // cannot create the SVG target. No mixed-family substitute icon.
             let old_font = SelectObject(draw.hDC, self.font.into());
             SetBkMode(draw.hDC, TRANSPARENT);
             SetTextColor(draw.hDC, foreground);
@@ -608,13 +792,76 @@ impl Theme {
             }
         }
     }
+    fn draw_combo(&self, draw: &DRAWITEMSTRUCT) {
+        // SAFETY: The native combo owns strings. Check each item's length before
+        // asking Windows to copy it into a fixed buffer; never overflow that buffer.
+        unsafe {
+            let selected = draw.itemState.0 & ODS_SELECTED.0 != 0;
+            FillRect(
+                draw.hDC,
+                &draw.rcItem,
+                self.fill(if selected { self.accent } else { self.surface }),
+            );
+            SetBkMode(draw.hDC, TRANSPARENT);
+            SetTextColor(
+                draw.hDC,
+                if selected {
+                    self.accent_text
+                } else {
+                    self.text
+                },
+            );
+            let previous = SelectObject(draw.hDC, self.font.into());
+            let mut text = [0u16; 256];
+            let length = if draw.itemID == u32::MAX {
+                -1
+            } else {
+                SendMessageW(
+                    draw.hwndItem,
+                    CB_GETLBTEXTLEN,
+                    Some(WPARAM(draw.itemID as usize)),
+                    None,
+                )
+                .0
+            };
+            let count = if (0..256).contains(&length) {
+                SendMessageW(
+                    draw.hwndItem,
+                    CB_GETLBTEXT,
+                    Some(WPARAM(draw.itemID as usize)),
+                    Some(LPARAM(text.as_mut_ptr() as isize)),
+                )
+                .0
+                .clamp(0, 255) as usize
+            } else {
+                let placeholder = "No iPhone detected";
+                for (to, c) in text.iter_mut().zip(placeholder.encode_utf16()) {
+                    *to = c;
+                }
+                placeholder.len()
+            };
+            let mut rect = draw.rcItem;
+            rect.left += self.px(8);
+            rect.right -= self.px(4);
+            DrawTextW(
+                draw.hDC,
+                &mut text[..count],
+                &mut rect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+            );
+            SelectObject(draw.hDC, previous);
+            if crate::ui_input::keyboard_focus_visible() && draw.itemState.0 & ODS_FOCUS.0 != 0 {
+                self.focus_outline(draw.hDC, &draw.rcItem, self.text);
+            }
+        }
+    }
     fn focus_outline(&self, dc: HDC, rect: &RECT, color: COLORREF) {
         // SAFETY: The outline stays inside the existing control bounds. Restore
         // selected GDI objects before freeing the temporary solid pen.
         unsafe {
             let inset = self.px(3);
             let radius = self.px(6);
-            let pen = CreatePen(PS_SOLID, self.px(2).max(1), color);
+            let pen = self.stroke(color, self.px(2).max(1));
             let previous_pen = SelectObject(dc, pen.into());
             let previous_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
             let _ = RoundRect(
@@ -628,7 +875,6 @@ impl Theme {
             );
             SelectObject(dc, previous_brush);
             SelectObject(dc, previous_pen);
-            let _ = DeleteObject(pen.into());
         }
     }
 }
@@ -660,7 +906,14 @@ impl Drop for Theme {
         unsafe {
             let _ = DeleteObject(self.font.into());
             let _ = DeleteObject(self.heading.into());
-            let _ = DeleteObject(self.brush.into());
+            let _ = DeleteObject(self.small.into());
+            let _ = DeleteObject(self.strong.into());
+            for (_, brush) in &self.brushes {
+                let _ = DeleteObject((*brush).into());
+            }
+            for (_, _, pen) in &self.pens {
+                let _ = DeleteObject((*pen).into());
+            }
         }
     }
 }

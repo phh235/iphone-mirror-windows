@@ -1,7 +1,10 @@
 //! Native modeless settings with four pages; actions are posted to the main window.
 use crate::{control, theme};
 use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice};
-use std::{cell::RefCell, ffi::c_void};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::c_void,
+};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -22,6 +25,8 @@ pub const WIRELESS: usize = 212;
 pub const DEVICE: usize = 213;
 pub const REFRESH: usize = 214;
 pub const RECEIVER: usize = 215;
+const WIRELESS_TITLE: usize = 216;
+const WIRELESS_LABEL: usize = 217;
 pub const CONTROL: usize = 220;
 pub const CONTROL_AUTO: usize = 221;
 pub const CONTROL_BT: usize = 222;
@@ -44,6 +49,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 struct Item {
+    id: usize,
     window: HWND,
     page: usize,
     x: i32,
@@ -57,11 +63,15 @@ struct Context {
     page: usize,
     items: Vec<Item>,
     advanced: bool,
+    wireless: bool,
+    pending_speed: Option<u16>,
 }
 pub struct Panel {
     window: HWND,
     context: Box<RefCell<Context>>,
     devices: Vec<String>,
+    last_speed: Option<u16>,
+    last_status: Option<&'static str>,
 }
 struct CreatingWindow {
     window: HWND,
@@ -86,6 +96,8 @@ impl Panel {
             page: 0,
             items: Vec::new(),
             advanced: false,
+            wireless: false,
+            pending_speed: None,
         }));
         // SAFETY: Window is owned by this UI thread; context remains allocated until it is destroyed.
         unsafe {
@@ -115,8 +127,8 @@ impl Panel {
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL | WS_HSCROLL,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                ((720.0 * initial_scale).round() as i32).min(work_area.right - work_area.left),
-                ((590.0 * initial_scale).round() as i32).min(work_area.bottom - work_area.top),
+                ((840.0 * initial_scale).round() as i32).min(work_area.right - work_area.left),
+                ((580.0 * initial_scale).round() as i32).min(work_area.bottom - work_area.top),
                 Some(owner),
                 None,
                 Some(instance.into()),
@@ -179,6 +191,7 @@ impl Panel {
                 }
                 let _ = SetWindowSubclass(child, Some(focus_child), 0x5343, window.0 as usize);
                 context.borrow_mut().items.push(Item {
+                    id,
                     window: child,
                     page,
                     x,
@@ -189,72 +202,71 @@ impl Panel {
                 });
                 Ok(child)
             };
-            for (index, text) in ["Connection", "Control", "Display", "Advanced"]
+            for (index, title) in ["Connection", "Control", "Display", "Advanced"]
                 .iter()
                 .enumerate()
             {
-                add(
+                let navigation = add(
                     200 + index,
-                    text,
+                    title,
                     w!("BUTTON"),
                     WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
                     4,
                     12,
-                    20 + index as i32 * 44,
+                    16 + index as i32 * 42,
                     136,
-                    36,
+                    38,
                     false,
                 )?;
+                SetWindowLongPtrW(navigation, GWLP_USERDATA, 8);
             }
-            let mut label_id = 300usize;
-            let label = |id: &mut usize| {
-                *id += 1;
-                *id
-            };
-            for (page, title, subtitle) in [
-                (0, "Connection", "Choose how your iPhone connects."),
-                (1, "Control", "Use your mouse and keyboard with iPhone."),
-                (2, "Display", "Choose how the image fits your window."),
-                (
-                    3,
-                    "Advanced",
-                    "Optional tools for setup and troubleshooting.",
-                ),
-            ] {
-                add(
-                    label(&mut label_id),
+            let next_label = Cell::new(300usize);
+            let text = |title: &str,
+                        page: usize,
+                        x: i32,
+                        y: i32,
+                        width: i32,
+                        height: i32,
+                        role: isize,
+                        advanced: bool|
+             -> windows::core::Result<HWND> {
+                let id = next_label.get() + 1;
+                next_label.set(id);
+                let child = add(
+                    id,
                     title,
                     w!("STATIC"),
                     WINDOW_STYLE::default(),
                     page,
-                    176,
-                    22,
-                    476,
-                    28,
-                    false,
+                    x,
+                    y,
+                    width,
+                    height,
+                    advanced,
                 )?;
-                add(
-                    label(&mut label_id),
-                    subtitle,
-                    w!("STATIC"),
-                    WINDOW_STYLE::default(),
-                    page,
-                    176,
-                    58,
-                    476,
-                    28,
-                    false,
-                )?;
+                SetWindowLongPtrW(child, GWLP_USERDATA, role);
+                Ok(child)
+            };
+            for (page, title, description) in [
+                (0, "Connection", "Choose how your iPhone connects."),
+                (1, "Control", "Mouse and keyboard control for iPhone."),
+                (2, "Display", "Choose how the image fits your window."),
+                (3, "Advanced", "Optional tools and troubleshooting."),
+            ] {
+                text(title, page, 180, 20, 560, 28, 1, false)?;
+                text(description, page, 180, 52, 560, 22, 2, false)?;
             }
             let radio = WS_TABSTOP | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32);
             let check = WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32);
-            for (i, (id, text)) in [(AUTO, "Automatic"), (USB, "USB"), (WIRELESS, "Wireless")]
+            let button = WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32);
+            text("Connection mode", 0, 180, 88, 520, 20, 3, false)?;
+            for (i, (id, title)) in [(AUTO, "Automatic"), (USB, "USB"), (WIRELESS, "Wireless")]
                 .into_iter()
                 .enumerate()
             {
                 add(
                     id,
-                    text,
+                    title,
                     w!("BUTTON"),
                     radio
                         | if i == 0 {
@@ -263,74 +275,94 @@ impl Panel {
                             WINDOW_STYLE::default()
                         },
                     0,
-                    176,
-                    100 + i as i32 * 36,
-                    360,
-                    32,
+                    180,
+                    114 + i as i32 * 28,
+                    510,
+                    26,
                     false,
                 )?;
             }
+            text("Device", 0, 180, 216, 520, 20, 3, false)?;
             add(
                 DEVICE,
                 "",
                 w!("COMBOBOX"),
-                WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+                WS_TABSTOP
+                    | WS_VSCROLL
+                    | WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS) as u32),
                 0,
-                176,
-                222,
-                350,
+                180,
+                242,
+                390,
                 160,
                 false,
             )?;
             add(
                 REFRESH,
-                "Refresh devices",
+                "Refresh",
                 w!("BUTTON"),
-                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                button,
                 0,
-                176,
-                266,
-                154,
-                36,
+                586,
+                242,
+                104,
+                32,
                 false,
             )?;
-            add(
-                label(&mut label_id),
-                "Wireless receiver name",
+            let wireless_title = add(
+                WIRELESS_TITLE,
+                "Wireless",
                 w!("STATIC"),
                 WINDOW_STYLE::default(),
                 0,
-                176,
-                322,
-                380,
-                24,
+                180,
+                304,
+                520,
+                20,
                 false,
             )?;
+            SetWindowLongPtrW(wireless_title, GWLP_USERDATA, 3);
+            let wireless_label = add(
+                WIRELESS_LABEL,
+                "Receiver name",
+                w!("STATIC"),
+                WINDOW_STYLE::default(),
+                0,
+                180,
+                328,
+                520,
+                20,
+                false,
+            )?;
+            SetWindowLongPtrW(wireless_label, GWLP_USERDATA, 2);
             add(
                 RECEIVER,
                 "iMirror",
                 w!("EDIT"),
                 WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
                 0,
-                176,
-                350,
-                350,
+                180,
+                352,
+                510,
                 32,
                 false,
             )?;
+
+            text("Control", 1, 180, 88, 520, 20, 3, false)?;
             add(
                 CONTROL,
-                "Control iPhone",
+                "Enable Control",
                 w!("BUTTON"),
                 check,
                 1,
-                176,
-                96,
-                380,
-                32,
+                180,
+                114,
+                510,
+                28,
                 false,
             )?;
-            for (i, (id, text)) in [
+            text("Input mode", 1, 180, 154, 520, 20, 3, false)?;
+            for (i, (id, title)) in [
                 (CONTROL_AUTO, "Automatic"),
                 (CONTROL_BT, "Bluetooth Mouse"),
                 (CONTROL_WDA, "Advanced automation (WDA)"),
@@ -340,7 +372,7 @@ impl Panel {
             {
                 add(
                     id,
-                    text,
+                    title,
                     w!("BUTTON"),
                     radio
                         | if i == 0 {
@@ -349,75 +381,70 @@ impl Panel {
                             WINDOW_STYLE::default()
                         },
                     1,
-                    176,
-                    144 + i as i32 * 34,
-                    420,
-                    30,
+                    180,
+                    181 + i as i32 * 28,
+                    510,
+                    26,
                     i == 2,
                 )?;
             }
-            add(
-                SPEED_LABEL as usize,
-                "Mouse sensitivity: 100%",
-                w!("STATIC"),
-                WINDOW_STYLE::default(),
-                1,
-                176,
-                254,
-                420,
-                28,
-                false,
-            )?;
+            text("Pointer sensitivity", 1, 180, 254, 520, 20, 3, false)?;
             let slider = add(
                 SPEED,
-                "",
+                "Pointer sensitivity",
                 w!("msctls_trackbar32"),
-                WS_TABSTOP | WINDOW_STYLE(TBS_AUTOTICKS),
+                WS_TABSTOP | WINDOW_STYLE(TBS_NOTICKS),
                 1,
-                176,
-                286,
-                410,
-                36,
+                180,
+                282,
+                440,
+                30,
                 false,
             )?;
             SendMessageW(slider, TBM_SETRANGEMIN, Some(WPARAM(0)), Some(LPARAM(5)));
             SendMessageW(slider, TBM_SETRANGEMAX, Some(WPARAM(1)), Some(LPARAM(200)));
             SendMessageW(slider, TBM_SETPAGESIZE, None, Some(LPARAM(20)));
             add(
-                label(&mut label_id),
-                "Release shortcut: Ctrl + Alt + Q",
+                SPEED_LABEL as usize,
+                "100%",
                 w!("STATIC"),
                 WINDOW_STYLE::default(),
                 1,
-                176,
-                340,
-                430,
-                28,
+                636,
+                285,
+                60,
+                24,
                 false,
             )?;
+            text("Release shortcut", 1, 180, 328, 520, 20, 3, false)?;
+            text("Ctrl + Alt + Q", 1, 180, 351, 520, 22, 0, false)?;
+            text("Status", 1, 180, 389, 520, 20, 3, false)?;
             add(
                 STATUS as usize,
                 "",
                 w!("STATIC"),
                 WINDOW_STYLE::default(),
                 1,
-                176,
-                382,
-                440,
-                88,
+                180,
+                413,
+                530,
+                48,
                 false,
             )?;
-            for (i, (id, text)) in [
-                (FIT, "Fit — show the whole screen"),
-                (ONE, "1:1 — one source pixel per screen pixel"),
-                (FILL, "Fill — crop the edges to fill the window"),
+
+            text("Scaling", 2, 180, 88, 520, 20, 3, false)?;
+            for (i, (id, title, description)) in [
+                (FIT, "Fit", "Show the entire iPhone screen."),
+                (ONE, "1:1", "One source pixel per screen pixel."),
+                (FILL, "Fill", "Fill the window; edges may be cropped."),
             ]
             .into_iter()
             .enumerate()
             {
+                let y = 114 + i as i32 * 60;
                 add(
                     id,
-                    text,
+                    title,
                     w!("BUTTON"),
                     radio
                         | if i == 0 {
@@ -426,98 +453,103 @@ impl Panel {
                             WINDOW_STYLE::default()
                         },
                     2,
-                    176,
-                    104 + i as i32 * 44,
-                    466,
-                    36,
+                    180,
+                    y,
+                    510,
+                    26,
                     false,
                 )?;
+                text(description, 2, 208, y + 28, 490, 20, 2, false)?;
             }
+            text("Rendering", 2, 180, 310, 520, 20, 3, false)?;
             add(
                 VSYNC,
-                "Synchronize display",
+                "Synchronized display",
                 w!("BUTTON"),
                 check,
                 2,
-                176,
-                252,
-                420,
-                32,
+                180,
+                336,
+                510,
+                28,
                 false,
             )?;
+
+            text("Advanced features", 3, 180, 88, 520, 20, 3, false)?;
             add(
                 ADVANCED,
                 "Enable advanced features",
                 w!("BUTTON"),
                 check,
                 3,
-                176,
-                102,
-                430,
-                32,
+                180,
+                114,
+                510,
+                28,
                 false,
             )?;
+            text("Troubleshooting", 3, 180, 166, 520, 20, 3, false)?;
             add(
                 DIAGNOSTICS,
                 "Diagnostics",
                 w!("BUTTON"),
-                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                button,
                 3,
-                176,
-                160,
                 180,
-                36,
+                194,
+                150,
+                32,
                 false,
-            )?;
-            add(
-                WDA,
-                "Connect WDA",
-                w!("BUTTON"),
-                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
-                3,
-                176,
-                222,
-                180,
-                36,
-                true,
             )?;
             add(
                 COPY_DIAGNOSTICS,
                 "Copy Diagnostics",
                 w!("BUTTON"),
-                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                button,
                 3,
-                372,
-                160,
-                200,
-                36,
+                346,
+                194,
+                190,
+                32,
                 false,
             )?;
+            text("WDA", 3, 180, 260, 520, 20, 3, true)?;
             add(
-                label(&mut label_id),
-                "WDA requires a signed iPhone runner, Developer Mode and a local connection. It is optional.",
-                w!("STATIC"),
-                WINDOW_STYLE::default(),
+                WDA,
+                "Connect WDA",
+                w!("BUTTON"),
+                button,
                 3,
-                176,
-                276,
-                450,
-                96,
+                180,
+                288,
+                150,
+                32,
+                true,
+            )?;
+            text(
+                "Requires a signed iPhone runner, Developer Mode and a local connection. Optional.",
+                3,
+                180,
+                336,
+                520,
+                56,
+                2,
                 true,
             )?;
             add(
                 APPLY,
                 "Done",
                 w!("BUTTON"),
-                WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+                button,
                 4,
-                532,
+                700,
                 492,
-                120,
-                36,
+                100,
+                32,
                 false,
             )?;
             let appearance = theme::refresh(window);
+            appearance.apply_fonts(window);
             for item in &context.borrow().items {
                 if item.page < 4 && item.y == 22 {
                     appearance.set_font(item.window, true);
@@ -529,6 +561,8 @@ impl Panel {
                 window,
                 context,
                 devices: Vec::new(),
+                last_speed: None,
+                last_status: None,
             })
         }
     }
@@ -546,7 +580,26 @@ impl Panel {
         input: &control::Snapshot,
         devices: &[imirror_native_core::Device],
     ) {
-        self.context.borrow_mut().advanced = config.advanced;
+        let (layout_changed, display_speed) = {
+            let mut state = self.context.borrow_mut();
+            let wireless = config.connection == ConnectionChoice::Wireless;
+            let changed = state.advanced != config.advanced || state.wireless != wireless;
+            state.advanced = config.advanced;
+            state.wireless = wireless;
+            if state.pending_speed == Some(input.pointer_speed_percent) {
+                state.pending_speed = None;
+            }
+            (
+                changed,
+                state
+                    .pending_speed
+                    .unwrap_or(if input.pointer_speed_percent >= 5 {
+                        input.pointer_speed_percent
+                    } else {
+                        100
+                    }),
+            )
+        };
         // SAFETY: All child IDs refer to this owned settings window; state updates use native control messages.
         unsafe {
             for (id, checked) in [
@@ -563,12 +616,18 @@ impl Panel {
                 (VSYNC, config.vsync),
                 (ADVANCED, config.advanced),
             ] {
-                if let Ok(child) = child_control(self.window, id as i32) {
+                if let Ok(child) = child_control(self.window, id as i32)
+                    && SendMessageW(child, BM_GETCHECK, None, None).0 != isize::from(checked)
+                {
                     SendMessageW(child, BM_SETCHECK, Some(WPARAM(usize::from(checked))), None);
                 }
             }
-            let ids = devices.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
-            if self.devices != ids {
+            if !self
+                .devices
+                .iter()
+                .map(String::as_str)
+                .eq(devices.iter().map(|d| d.id.as_str()))
+            {
                 if let Ok(combo) = child_control(self.window, DEVICE as i32) {
                     SendMessageW(combo, CB_RESETCONTENT, None, None);
                     for device in devices {
@@ -582,35 +641,41 @@ impl Panel {
                     }
                     SendMessageW(combo, CB_SETCURSEL, Some(WPARAM(0)), None);
                 }
-                self.devices = ids;
+                self.devices = devices.iter().map(|d| d.id.clone()).collect();
             }
             if let Ok(slider) = child_control(self.window, SPEED as i32)
                 && windows::Win32::UI::Input::KeyboardAndMouse::GetCapture() != slider
+                && SendMessageW(slider, WM_USER, None, None).0 != display_speed as isize
             {
                 SendMessageW(
                     slider,
                     TBM_SETPOS,
                     Some(WPARAM(1)),
-                    Some(LPARAM(input.pointer_speed_percent as isize)),
+                    Some(LPARAM(display_speed as isize)),
                 );
             }
-            let speed = wide(&format!(
-                "Mouse sensitivity: {}%",
-                input.pointer_speed_percent
-            ));
-            if let Ok(label) = child_control(self.window, SPEED_LABEL) {
-                let _ = SetWindowTextW(label, PCWSTR(speed.as_ptr()));
+            if self.last_speed != Some(display_speed) {
+                let speed = wide(&format!("{display_speed}%"));
+                if let Ok(label) = child_control(self.window, SPEED_LABEL) {
+                    let _ = SetWindowTextW(label, PCWSTR(speed.as_ptr()));
+                }
+                self.last_speed = Some(display_speed);
             }
             let status = control_guidance(config, input);
-            let status = wide(status);
-            if let Ok(label) = child_control(self.window, STATUS) {
-                let _ = SetWindowTextW(label, PCWSTR(status.as_ptr()));
+            if self.last_status != Some(status) {
+                let value = wide(status);
+                if let Ok(label) = child_control(self.window, STATUS) {
+                    let _ = SetWindowTextW(label, PCWSTR(value.as_ptr()));
+                }
+                self.last_status = Some(status);
             }
             if let Ok(wda) = child_control(self.window, WDA as i32) {
                 let _ = EnableWindow(wda, config.advanced);
             }
         }
-        layout(self.window, &self.context.borrow());
+        if layout_changed {
+            layout(self.window, &self.context.borrow());
+        }
     }
     pub fn receiver_name(&self) -> String {
         let mut text = [0u16; 128]; // SAFETY: Fixed writable UTF-16 buffer for owned edit control.
@@ -786,21 +851,74 @@ fn control_guidance(config: &Config, input: &control::Snapshot) -> &'static str 
         };
     }
     if input.ready && input.ble.mouse_ready() {
-        "Ready. Click the mirrored screen to take control. Enable AssistiveTouch on iPhone if needed."
+        "Ready. Click the iPhone screen. Ctrl+Alt+Q releases control."
     } else if input.ble.adapter.as_ref().is_some_and(|a| !a.peripheral) {
-        "This Bluetooth adapter cannot provide iPhone control. See Advanced Diagnostics."
+        "Bluetooth control is unavailable on this adapter. See Diagnostics."
     } else if input
         .ble
         .adapter
         .as_ref()
         .is_some_and(|a| a.radio_state != "ON")
     {
-        "Turn on Windows Bluetooth to connect control."
+        "Turn on Windows Bluetooth."
     } else if input.ble.advertising_status == "STARTED" {
-        "Pair this PC from iPhone Bluetooth settings, then enable AssistiveTouch. Waiting for control connection."
+        "Pair this PC in iPhone Bluetooth settings. Enable AssistiveTouch."
     } else {
-        "Starting Bluetooth control. Wait for advertising to start; see Diagnostics if this persists."
+        "Starting Bluetooth control. See Diagnostics if it does not start."
     }
+}
+fn item_visible(item: &Item, context: &Context) -> bool {
+    (item.page == 4 || item.page == context.page)
+        && (!item.advanced || context.advanced)
+        && (!matches!(item.id, RECEIVER | WIRELESS_TITLE | WIRELESS_LABEL) || context.wireless)
+}
+fn item_rect(item: &Item, context: &Context, width: i32) -> (i32, i32, i32, i32) {
+    if item.page == 4 {
+        return (item.x, item.y, item.width, item.height);
+    }
+    let mut x = item.x - 160;
+    let mut y = item.y;
+    let mut w = item.width;
+    let mut h = item.height;
+    if item.page == 1 && item.y >= 254 && context.advanced {
+        y += 28;
+    }
+    let available = (width - 40).max(160);
+    if item.width >= 480 {
+        w = w.min(available);
+    }
+    if item.page == 0 && width < 550 {
+        if item.id == DEVICE {
+            w = available;
+        }
+        if item.id == REFRESH {
+            x = 20;
+            y += 42;
+        }
+        if item.y >= 304 {
+            y += 42;
+        }
+    }
+    if item.id == DEVICE {
+        h = 32;
+    }
+    let slider_width = (width - 112).clamp(100, 440);
+    if item.id == SPEED {
+        w = slider_width;
+    }
+    if item.id == SPEED_LABEL as usize {
+        x = 20 + slider_width + 16;
+    }
+    if item.page == 3 && width < 410 {
+        if item.id == COPY_DIAGNOSTICS {
+            x = 20;
+            y += 42;
+        }
+        if item.y >= 260 {
+            y += 42;
+        }
+    }
+    (x, y, w, h)
 }
 fn layout(window: HWND, context: &Context) {
     let theme = theme::current(window); // SAFETY: All controls are owned by this UI thread and remain alive while context is borrowed.
@@ -810,22 +928,29 @@ fn layout(window: HWND, context: &Context) {
         let Ok(canvas) = GetDlgItem(Some(window), CANVAS) else {
             return;
         };
-        let sidebar = theme.px(164);
+        let sidebar = theme.px(160);
         let viewport_width = (client.right - sidebar).max(1);
         let viewport_height = (client.bottom - theme.px(64)).max(1);
         let _ = MoveWindow(canvas, sidebar, 0, viewport_width, viewport_height, true);
+        let logical_width = (i64::from(viewport_width) * 96 / i64::from(theme.dpi)) as i32;
         let visible = context
             .items
             .iter()
-            .filter(|i| i.page == context.page && (!i.advanced || context.advanced));
+            .filter(|i| item_visible(i, context) && i.page < 4);
         let width = visible
             .clone()
-            .map(|i| theme.px(i.x + i.width + 16) - sidebar)
+            .map(|i| {
+                let r = item_rect(i, context, logical_width);
+                theme.px(r.0 + r.2 + 16)
+            })
             .max()
             .unwrap_or(1)
             .max(viewport_width);
         let height = visible
-            .map(|i| theme.px(i.y + i.height + 16))
+            .map(|i| {
+                let r = item_rect(i, context, logical_width);
+                theme.px(r.1 + r.3 + 16)
+            })
             .max()
             .unwrap_or(1)
             .max(viewport_height);
@@ -847,29 +972,29 @@ fn layout(window: HWND, context: &Context) {
             offsets[index] = SetScrollInfo(window, bar, &info, true);
         }
         for item in &context.items {
-            let visible = (item.page == 4 || item.page == context.page)
-                && (!item.advanced || context.advanced);
+            let visible = item_visible(item, context);
             let _ = ShowWindow(item.window, if visible { SW_SHOW } else { SW_HIDE });
-            let x = if item.page == 4 && item.y == 492 {
-                client.right - theme.px(140)
+            let r = item_rect(item, context, logical_width);
+            let x = if item.id == APPLY {
+                client.right - theme.px(120)
+            } else if item.page < 4 {
+                theme.px(r.0) - offsets[0]
             } else {
                 theme.px(item.x)
             };
-            let y = if item.page == 4 && item.y == 492 {
-                client.bottom - theme.px(52)
+            let y = if item.id == APPLY {
+                client.bottom - theme.px(48)
+            } else if item.page < 4 {
+                theme.px(r.1) - offsets[1]
             } else {
                 theme.px(item.y)
             };
             let _ = MoveWindow(
                 item.window,
-                if item.page < 4 {
-                    x - sidebar - offsets[0]
-                } else {
-                    x
-                },
-                if item.page < 4 { y - offsets[1] } else { y },
-                theme.px(item.width),
-                theme.px(item.height),
+                x,
+                y,
+                theme.px(r.2),
+                theme.px(if item.id == DEVICE { 160 } else { r.3 }),
                 true,
             );
         }
@@ -943,6 +1068,7 @@ unsafe extern "system" fn procedure(
                         layout(window, &cell.borrow());
                     } else if let Ok(slider) = child_control(window, SPEED as i32) {
                         let value = SendMessageW(slider, WM_USER, None, None).0;
+                        cell.borrow_mut().pending_speed = Some(value.clamp(5, 200) as u16);
                         let _ = PostMessageW(
                             Some(cell.borrow().owner),
                             EVENT,
@@ -981,6 +1107,13 @@ unsafe extern "system" fn procedure(
                     if let Ok(context) = cell.try_borrow() {
                         layout(window, &context);
                     }
+                    return LRESULT(0);
+                }
+                WM_GETMINMAXINFO => {
+                    let info = &mut *(lparam.0 as *mut MINMAXINFO);
+                    let theme = theme::current(window);
+                    info.ptMinTrackSize.x = theme.px(620);
+                    info.ptMinTrackSize.y = theme.px(360);
                     return LRESULT(0);
                 }
                 WM_DPICHANGED => {
@@ -1057,7 +1190,7 @@ fn reveal(window: HWND, child: HWND) {
         let top = bounds.top - origin.y;
         let right = bounds.right - origin.x;
         let bottom = bounds.bottom - origin.y;
-        let dx = if left < 8 {
+        let dx = if right - left > client.right - 16 || left < 8 {
             left - 8
         } else if right > client.right - 8 {
             right - client.right + 8
