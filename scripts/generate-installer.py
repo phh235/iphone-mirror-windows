@@ -28,6 +28,8 @@ def main():
     add(build_property,"RegistrySearch",Id="WindowsBuildSearch",Root="HKLM",Key=r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",Name="CurrentBuildNumber",Type="raw",Win64="yes")
     add(product,"Condition",Message="iMirror requires Windows 11 x64 or Windows 10 22H2 x64.").text="Installed OR (VersionNT64 AND IMIRROR_WINDOWS_BUILD >= 19045)"
     add(product,"Property",Id="ARPNOMODIFY",Value="1")
+    add(product,"Icon",Id="AppIcon",SourceFile=str(ROOT/"assets/imirror.ico"))
+    add(product,"Property",Id="ARPPRODUCTICON",Value="AppIcon")
     add(product,"Property",Id="WIXUI_INSTALLDIR",Value="INSTALLFOLDER")
     add(product,"WixVariable",Id="WixUILicenseRtf",Value=str(ROOT/"installer/license.rtf"))
     add(product,"UIRef",Id="WixUI_FeatureTree")
@@ -59,7 +61,7 @@ def main():
     menu=add(tree,"Directory",Id="ProgramMenuFolder")
     shortcut_dir=add(menu,"Directory",Id="ApplicationProgramsFolder",Name="iMirror")
     component=add(shortcut_dir,"Component",Id="StartMenuShortcuts",Guid="*",Win64="yes")
-    add(component,"Shortcut",Id="StartMenuApp",Name="iMirror",Target="[INSTALLFOLDER]iMirror.exe",WorkingDirectory="INSTALLFOLDER")
+    add(component,"Shortcut",Id="StartMenuApp",Name="iMirror",Target="[INSTALLFOLDER]iMirror.exe",WorkingDirectory="INSTALLFOLDER",Icon="AppIcon",IconIndex="0")
     add(component,"RemoveFolder",Id="RemoveStartMenuFolder",On="uninstall")
     add(component,"RegistryValue",Root="HKCU",Key="Software\\iMirror\\Installer",Name="StartMenu",Type="integer",Value="1",KeyPath="yes")
     for directory, element in directories.items():
@@ -69,7 +71,7 @@ def main():
     add(feature,"ComponentRef",Id="StartMenuShortcuts")
     desktop=add(tree,"Directory",Id="DesktopFolder")
     component=add(desktop,"Component",Id="DesktopShortcut",Guid="*",Win64="yes")
-    add(component,"Shortcut",Id="DesktopApp",Name="iMirror",Target="[INSTALLFOLDER]iMirror.exe",WorkingDirectory="INSTALLFOLDER")
+    add(component,"Shortcut",Id="DesktopApp",Name="iMirror",Target="[INSTALLFOLDER]iMirror.exe",WorkingDirectory="INSTALLFOLDER",Icon="AppIcon",IconIndex="0")
     add(component,"RegistryValue",Root="HKCU",Key="Software\\iMirror\\Installer",Name="Desktop",Type="integer",Value="1",KeyPath="yes")
     option=add(product,"Feature",Id="DesktopFeature",Title="Desktop shortcut",Description="Add an iMirror shortcut to the desktop.",Level="2")
     add(option,"ComponentRef",Id="DesktopShortcut")

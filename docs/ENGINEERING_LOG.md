@@ -503,3 +503,23 @@ when USB capture appeared. Final measurements include two verified idle runs
 each for original r2, compact pre-SVG and compact SVG builds. No 30-minute or
 physical first-click acceptance is claimed. Installer/public release work stays
 behind the user's physical validation gate.
+
+## 2026-09-12 — User-supplied app logo
+
+Used assets/logo.png unchanged as the application artwork. Generated a 12-size
+ICO (16–256 px, 21,482 bytes) with the build-only prepare-app-icon.ps1 script and
+embedded it as resource 101 using the Windows SDK resource compiler. SDK lookup
+uses the host architecture rather than the full Rust target triple, as required
+by find-msvc-tools 0.1.12 (already present through cc; no new runtime dependency).
+
+Main/Settings windows load cached DPI-appropriate small/large native icons;
+Advanced Diagnostics receives the same app identity. Only the diagnostic window
+branding call changed in ble_panel.rs; no BLE/control code changed. WiX shortcut,
+ARP and setup icon configuration now references the same ICO. No installer was
+built or clean-machine-tested in this branding pass.
+
+Formatting, strict Clippy, 52 tests and release build pass. Native main and
+Settings smoke captures show the supplied logo in their title bars. Frozen media
+and input implementations are untouched. The exact logo test build is staged at
+dist/ui-logo-20260912/iMirror.exe, SHA-256
+96a847662b530c2fe799a8db57a25f8838e95a0e4e5fd76bc93464f2c5cafa51.

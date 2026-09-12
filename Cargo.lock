@@ -360,6 +360,7 @@ name = "imirror"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "find-msvc-tools",
  "imirror-coordinate-map",
  "imirror-device",
  "imirror-input-ble",

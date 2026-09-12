@@ -84,6 +84,7 @@ impl BlePanel {
                 Some(owner.0.cast_const()),
             )?;
             let result = (|| {
+                crate::app_icon::apply(window)?;
                 let speed_label = CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
                     w!("STATIC"),

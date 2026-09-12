@@ -51,7 +51,7 @@ try {
     $setup = Join-Path $dist "iMirror-$version-Setup.exe"
     Invoke-Checked (Join-Path $wix 'candle.exe') @('-nologo','-arch','x64','-ext','WixUIExtension','-out',(Join-Path $build 'Product.wixobj'),$wxs)
     Invoke-Checked (Join-Path $wix 'light.exe') @('-nologo','-sice:ICE91','-wx','-ext','WixUIExtension','-out',$msi,(Join-Path $build 'Product.wixobj'))
-    Invoke-Checked (Join-Path $wix 'candle.exe') @('-nologo','-ext','WixBalExtension',"-dProductVersion=$version","-dMsiPath=$msi",("-dLicensePath="+(Join-Path $root 'installer/license.rtf')),'-out',(Join-Path $build 'Bundle.wixobj'),(Join-Path $root 'installer/Bundle.wxs'))
+    Invoke-Checked (Join-Path $wix 'candle.exe') @('-nologo','-ext','WixBalExtension',"-dProductVersion=$version","-dMsiPath=$msi",("-dAppIconPath="+(Join-Path $root 'assets/imirror.ico')),("-dLicensePath="+(Join-Path $root 'installer/license.rtf')),'-out',(Join-Path $build 'Bundle.wixobj'),(Join-Path $root 'installer/Bundle.wxs'))
     Invoke-Checked (Join-Path $wix 'light.exe') @('-nologo','-ext','WixBalExtension','-out',$setup,(Join-Path $build 'Bundle.wixobj'))
     $portable = Join-Path $dist "iMirror-$version-x64.zip"
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portable -Force

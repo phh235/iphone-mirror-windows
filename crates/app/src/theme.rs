@@ -647,6 +647,9 @@ impl Theme {
         }
     }
     pub fn apply_window(&self, window: HWND) {
+        if let Err(error) = crate::app_icon::apply(window) {
+            tracing::warn!(%error, "Application icon could not be loaded");
+        }
         let dark = i32::from(self.dark && !self.high_contrast);
         let corners = if self.high_contrast {
             DWMWCP_DONOTROUND

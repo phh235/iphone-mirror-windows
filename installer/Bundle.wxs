@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
   <Bundle Name="iMirror" Version="$(var.ProductVersion)" Manufacturer="iMirror Project"
-          UpgradeCode="7C38E020-B4F9-4E51-A4C8-90605B8ED0A7">
+          UpgradeCode="7C38E020-B4F9-4E51-A4C8-90605B8ED0A7" IconSourceFile="$(var.AppIconPath)">
     <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.RtfLicense">
       <bal:WixStandardBootstrapperApplication LicenseFile="$(var.LicensePath)" />
     </BootstrapperApplicationRef>

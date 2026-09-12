@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod app_icon;
 mod benchmark;
 mod benchmark_preview;
 mod ble_panel;
