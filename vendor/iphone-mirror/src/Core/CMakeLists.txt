@@ -97,6 +97,10 @@ target_link_libraries(iPhoneMirror.UsbConfigurationSwitch PRIVATE
 
 if(IPHONEMIRROR_BUILD_TESTS)
     enable_testing()
+    add_executable(iPhoneMirror.EncodedFrameQueue.Tests tests/EncodedFrameQueueTests.cpp)
+    target_include_directories(iPhoneMirror.EncodedFrameQueue.Tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_options(iPhoneMirror.EncodedFrameQueue.Tests PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
+    add_test(NAME EncodedFrameQueueTests COMMAND iPhoneMirror.EncodedFrameQueue.Tests)
     add_executable(iPhoneMirror.Core.Tests
         tests/CoreTests.cpp
         src/Protocol/Plist.cpp

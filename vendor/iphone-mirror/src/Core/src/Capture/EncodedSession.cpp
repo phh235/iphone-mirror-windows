@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "Capture/EncodedSession.h"
 #include "Protocol/QuickTimePacket.h"
+#include "Logging.h"
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <stdexcept>
 
 namespace iPhoneMirror::capture {
@@ -11,21 +13,37 @@ EncodedSession::EncodedSession(CapturePreferences preferences)
       volume_(preferences.audio_volume), decoder_preference_(preferences.decoder_preference) {
     status_.state=State::WaitingForDevice;
     status_.message=L"Open Screen Mirroring on your iPhone and select iMirror.";
-    for(auto& packet:queue_) packet.avcc.reserve(256*1024);
     worker_=std::jthread([this](std::stop_token token){run(token);});
 }
 EncodedSession::~EncodedSession(){stop();}
 void EncodedSession::stop() noexcept {
-    worker_.request_stop(); available_.notify_all();
+    worker_.request_stop();
+    {std::scoped_lock lock(queue_mutex_);invalidate_queue();}
+    available_.notify_all();
     if(worker_.joinable()) worker_.join();
     {std::scoped_lock lock(audio_mutex_);if(audio_) audio_->stop();audio_.reset();}
     std::scoped_lock lock(state_mutex_);latest_.reset();status_.state=State::Stopped;
 }
 void EncodedSession::reset() {
-    {std::scoped_lock lock(queue_mutex_);count_=0;head_=0;waiting_for_keyframe_=true;++generation_;}
-    {std::scoped_lock lock(state_mutex_);latest_.reset();status_.state=State::WaitingForDevice;
-     status_.fps=0;status_.message=L"AirPlay disconnected. Select iMirror on your iPhone to reconnect.";}
+    {std::scoped_lock queue_lock(queue_mutex_);invalidate_queue();
+     std::scoped_lock state_lock(state_mutex_);latest_.reset();status_.state=State::WaitingForDevice;
+     status_.fps=0;status_.error_code=0;status_.failure_kind=FailureKind::None;
+     status_.failure_stage=FailureStage::None;
+     status_.message=L"AirPlay disconnected. Select iMirror on your iPhone to reconnect.";}
     {std::scoped_lock lock(audio_mutex_);audio_.reset();audio_rate_=audio_channels_=0;}
+}
+void EncodedSession::invalidate_queue() noexcept {
+    queue_.reset();waiting_for_keyframe_=true;++generation_;
+}
+void EncodedSession::queue_failure(const char* reason) {
+    logging::write(logging::Level::Warning,"airplay",std::format(
+        "encoded_queue_recovery reason={} startup={} packets={} bytes={} peak_startup={} peak_streaming={}",
+        reason,queue_.startup(),queue_.size(),queue_.bytes(),peak_startup_queue_,peak_streaming_queue_));
+    invalidate_queue();
+    std::scoped_lock lock(state_mutex_);
+    status_.state=State::Handshaking;status_.failure_kind=FailureKind::VideoStream;
+    status_.failure_stage=FailureStage::VideoStream;status_.error_code=-3002;
+    status_.message=L"Wireless video fell behind. Waiting for a keyframe; reconnect Screen Mirroring if needed.";
 }
 void EncodedSession::submit(std::span<const std::uint8_t> avcc,std::span<const std::uint8_t> sps,
     std::span<const std::uint8_t> pps,std::uint32_t width,std::uint32_t height,
@@ -52,32 +70,41 @@ void EncodedSession::submit(std::span<const std::uint8_t> avcc,std::span<const s
     }
     {
         std::scoped_lock lock(queue_mutex_);
-        if(discontinuity||count_==queue_.size()){
-            count_=0;head_=0;waiting_for_keyframe_=true;++generation_;
-        }
+        if(worker_.get_stop_token().stop_requested()) return;
+        if(discontinuity) invalidate_queue();
+        if(const auto reason=queue_.rejection(avcc.size()+sps.size()+pps.size(),now)) queue_failure(reason);
         if(waiting_for_keyframe_&&!keyframe) return;
         if(waiting_for_keyframe_){discontinuity=true;waiting_for_keyframe_=false;}
-        auto& packet=queue_[(head_+count_)%queue_.size()];
+        const auto accepted=queue_.push(avcc.size()+sps.size()+pps.size(),now,[&](Packet& packet){
         packet.avcc.assign(avcc.begin(),avcc.end());
         packet.sps.assign(sps.begin(),sps.end());packet.pps.assign(pps.begin(),pps.end());
         packet.width=width;packet.height=height;packet.pts=pts;
         packet.keyframe=keyframe;packet.discontinuity=discontinuity;
-        packet.generation=generation_.load();packet.received=now;++count_;
+        packet.generation=generation_.load();packet.received=now;
+        });
+        if(!accepted) {queue_failure("admission_failed");return;}
+        auto& peak=queue_.startup()?peak_startup_queue_:peak_streaming_queue_;
+        peak=std::max(peak,queue_.size());
     }
     available_.notify_one();
 }
 void EncodedSession::run(std::stop_token token) noexcept {
-    Packet packet;packet.avcc.reserve(256*1024);
+    Packet packet;
     std::unique_ptr<media::MediaFoundationVideoDecoder> decoder;
     std::vector<std::uint8_t> sps,pps;
     auto applied=media::DecoderPreference::Auto;
     auto retry_after=std::chrono::steady_clock::time_point{};
     std::uint64_t decoded_generation{};
+    std::uint64_t published{};
+    auto next_metrics=std::chrono::steady_clock::now()+std::chrono::seconds(1);
     while(!token.stop_requested()) {
+        auto max_age=EncodedFrameQueue::StartupAge;
         {
             std::unique_lock lock(queue_mutex_);
-            if(!available_.wait(lock,token,[this]{return count_!=0;})) break;
-            std::swap(packet,queue_[head_]);head_=(head_+1)%queue_.size();--count_;
+            if(!available_.wait(lock,token,[this]{return queue_.size()!=0;})) break;
+            if(queue_.expired(std::chrono::steady_clock::now())) {queue_failure("encoded_age_limit");continue;}
+            max_age=queue_.max_age();
+            queue_.pop(packet);
         }
         if(packet.generation!=generation_.load()||std::chrono::steady_clock::now()<retry_after) continue;
         try {
@@ -105,7 +132,13 @@ void EncodedSession::run(std::stop_token token) noexcept {
             const auto start=std::chrono::steady_clock::now();
             auto frames=decoder->decode(packet.avcc,packet.pts,166667);
             const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
-            if(packet.generation!=generation_.load()) continue;
+            // Serialize generation validation and publication with reset/stop.
+            // A reset cannot occur between the check and publishing old video.
+            std::unique_lock queue_lock(queue_mutex_);
+            if(packet.generation!=generation_.load()||token.stop_requested()) continue;
+            const auto frame_age=std::chrono::steady_clock::now()-packet.received;
+            if(frame_age>max_age) {queue_failure("decoded_frame_expired");continue;}
+            if(!frames.empty()) queue_.decoded();
             for(auto& frame:frames) {
                 frame.received_at=packet.received;
                 auto latest=std::make_shared<const media::DecodedFrame>(std::move(frame));
@@ -113,10 +146,23 @@ void EncodedSession::run(std::stop_token token) noexcept {
                 latest_=std::move(latest);status_.state=State::Streaming;
                 status_.latency_ms=elapsed;status_.error_code=0;status_.failure_kind=FailureKind::None;
                 status_.message=L"AirPlay mirroring";
+                ++published;
+            }
+            if(std::chrono::steady_clock::now()>=next_metrics) {
+                const auto depth=queue_.size(),bytes=queue_.bytes();
+                const auto startup_peak=peak_startup_queue_,streaming_peak=peak_streaming_queue_;
+                const auto startup=queue_.startup();
+                queue_lock.unlock();
+                logging::write(std::format("airplay_decode published={} pending={} bytes={} startup={} peak_startup={} peak_streaming={} frame_age_ms={:.3f} decode_ms={:.3f}",
+                    published,depth,bytes,startup,startup_peak,streaming_peak,
+                    std::chrono::duration<double,std::milli>(frame_age).count(),elapsed));
+                next_metrics=std::chrono::steady_clock::now()+std::chrono::seconds(1);
             }
         } catch(...) {
             decoder.reset();retry_after=std::chrono::steady_clock::now()+std::chrono::seconds(1);
-            {std::scoped_lock lock(queue_mutex_);count_=0;head_=0;waiting_for_keyframe_=true;++generation_;}
+            std::scoped_lock queue_lock(queue_mutex_);
+            if(packet.generation!=generation_.load()||token.stop_requested()) continue;
+            invalidate_queue();
             std::scoped_lock lock(state_mutex_);
             status_.state=State::Handshaking;status_.failure_kind=FailureKind::VideoStream;
             status_.failure_stage=FailureStage::Decoder;status_.error_code=-3001;

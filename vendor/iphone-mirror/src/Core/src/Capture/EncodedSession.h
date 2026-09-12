@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "Capture/ICaptureSession.h"
+#include "Capture/EncodedFrameQueue.h"
 #include "Audio/WasapiRenderer.h"
 #include <array>
 #include <atomic>
@@ -34,21 +35,14 @@ public:
     DecoderSwitchStatus decoder_switch_status() const noexcept override;
     void request_display_orientation(bool) noexcept override {}
 private:
-    struct Packet {
-        std::vector<std::uint8_t> avcc, sps, pps;
-        std::uint32_t width{}, height{};
-        std::int64_t pts{};
-        bool keyframe{}, discontinuity{};
-        std::uint64_t generation{};
-        std::chrono::steady_clock::time_point received;
-    };
+    using Packet = EncodedPacket;
     mutable std::mutex state_mutex_, queue_mutex_, audio_mutex_;
     std::condition_variable_any available_;
     Snapshot status_;
     std::shared_ptr<const media::DecodedFrame> latest_;
-    std::array<Packet,3> queue_;
-    std::size_t head_{}, count_{};
+    EncodedFrameQueue queue_;
     bool waiting_for_keyframe_{true};
+    std::size_t peak_startup_queue_{},peak_streaming_queue_{};
     std::atomic_uint64_t generation_{1};
     std::atomic_uint32_t fps_cap_{0};
     std::atomic_bool audio_enabled_{true};
@@ -61,5 +55,8 @@ private:
     std::chrono::steady_clock::time_point fps_at_{std::chrono::steady_clock::now()};
     std::jthread worker_;
     void run(std::stop_token token) noexcept;
+    // Requires queue_mutex_; lock order is always queue, then state.
+    void invalidate_queue() noexcept;
+    void queue_failure(const char* reason);
 };
 }
