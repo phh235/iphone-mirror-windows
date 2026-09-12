@@ -12,6 +12,8 @@ use std::{
     },
 };
 
+pub const MAX_TRANSITIONS: usize = 128;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timing {
     pub received: u64,
@@ -46,6 +48,27 @@ pub enum Packet {
     },
 }
 impl Packet {
+    pub fn is_neutral(self) -> bool {
+        match self {
+            Self::Mouse {
+                buttons,
+                dx,
+                dy,
+                wheel,
+                ..
+            }
+            | Self::Button {
+                buttons,
+                dx,
+                dy,
+                wheel,
+                ..
+            } => buttons == 0 && dx == 0 && dy == 0 && wheel == 0,
+            Self::Keyboard {
+                modifiers, keys, ..
+            } => modifiers == 0 && keys == [0; 6],
+        }
+    }
     pub fn timing(self) -> Timing {
         match self {
             Self::Mouse { timing, .. }
@@ -108,7 +131,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             motion: Motion::default(),
-            transitions: VecDeque::with_capacity(128),
+            transitions: VecDeque::with_capacity(MAX_TRANSITIONS),
             buttons: 0,
             modifiers: 0,
             keys: [0; 6],
@@ -153,11 +176,16 @@ impl Mailbox {
         // Local capture ends before any GATT work; callers immediately unconfine the cursor.
         self.captured.store(false, Ordering::Release);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let had_input = state.buttons != 0
-            || state.modifiers != 0
-            || state.keys != [0; 6]
-            || state.motion.timing.motion_events > 0
-            || !state.transitions.is_empty();
+        self.neutralize(&mut state);
+        drop(state);
+        self.wake();
+    }
+    /// Invalidate locally before the worker can finish any pending GATT operation.
+    pub fn invalidate(&self) {
+        self.ready.store(false, Ordering::Release);
+        self.release();
+    }
+    fn neutralize(&self, state: &mut State) {
         self.metrics
             .stale
             .fetch_add(state.motion.timing.motion_events, Ordering::Relaxed);
@@ -168,11 +196,13 @@ impl Mailbox {
         state.modifiers = 0;
         state.gain.reset();
         state.wheel_remainder = 0;
-        if had_input {
+        // All-UP supersedes every queued release, including an UP whose DOWN
+        // is already in flight. Reserved capacity makes emergency release infallible.
+        {
             let at = now_ns();
             let timing = Timing {
-                received: at,
-                extracted: at,
+                received: 0, // Safety neutral, not a physical input-latency sample.
+                extracted: 0,
                 queued: at,
                 latest: at,
                 ..Timing::default()
@@ -191,8 +221,25 @@ impl Mailbox {
             });
         }
         self.metrics.pending(0);
-        drop(state);
+    }
+    fn overload(&self, state: &mut State) -> bool {
+        if state.transitions.len() < MAX_TRANSITIONS {
+            return false;
+        }
+        // Stop accepting presses. Never lose a release: collapse all outstanding
+        // mouse/key UPs into two all-UP reports and return local capture immediately.
+        self.captured.store(false, Ordering::Release);
+        self.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+        self.neutralize(state);
         self.wake();
+        true
+    }
+    pub fn transition_depth(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .transitions
+            .len()
     }
     pub fn mouse(
         &self,
@@ -230,6 +277,9 @@ impl Mailbox {
         state.wheel_remainder %= 120;
         let changed = buttons != state.buttons;
         if changed || wheel != 0 {
+            if self.overload(&mut state) {
+                return;
+            }
             let motion = std::mem::take(&mut state.motion);
             let mut timing = motion.timing;
             if timing.received == 0 {
@@ -295,6 +345,9 @@ impl Mailbox {
         if (state.modifiers, state.keys) == (modifiers, keys) {
             return;
         }
+        if self.overload(&mut state) {
+            return;
+        }
         state.modifiers = modifiers;
         state.keys = keys;
         state.transitions.push_back(Packet::Keyboard {
@@ -338,6 +391,55 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overload_keeps_all_up_bounded_and_stops_new_presses() {
+        let m = mailbox();
+        for t in 0..10000 {
+            m.mouse(0, 0, (t % 2) as u8, 120, t + 1, t + 1);
+            m.key((t % 2) as u8, [4, 0, 0, 0, 0, 0], t + 1);
+            assert!(m.transition_depth() <= MAX_TRANSITIONS);
+        }
+        assert!(!m.captured.load(Ordering::Acquire));
+        assert!(matches!(
+            m.take(20000, false, 100),
+            Some(Packet::Mouse {
+                buttons: 0,
+                dx: 0,
+                dy: 0,
+                wheel: 0,
+                ..
+            })
+        ));
+        assert!(matches!(
+            m.take(20001, false, 100),
+            Some(Packet::Keyboard {
+                modifiers: 0,
+                keys: [0, 0, 0, 0, 0, 0],
+                ..
+            })
+        ));
+        assert!(m.take(20002, true, 100).is_none());
+    }
+    #[test]
+    fn invalidation_clears_motion_even_with_worker_packet_in_flight() {
+        let m = mailbox();
+        m.mouse(4, 2, 1, 0, 2, 2);
+        let _in_flight = m.take(3, false, 100);
+        m.mouse(90, 30, 1, 0, 4, 4);
+        m.invalidate();
+        assert!(!m.ready.load(Ordering::Acquire));
+        assert!(!m.capture(0, 5));
+        assert_eq!(m.metrics.pending.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            m.take(6, false, 100),
+            Some(Packet::Mouse {
+                buttons: 0,
+                dx: 0,
+                dy: 0,
+                ..
+            })
+        ));
+    }
     #[test]
     fn taking_capture_does_not_hold_a_remote_button() {
         let m = mailbox();

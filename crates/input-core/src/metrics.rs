@@ -128,6 +128,9 @@ impl Metrics {
         self.max_pending.fetch_max(n, Ordering::Relaxed);
     }
     pub fn submitted(&self, received: u64, at: u64, button: bool, wheel: bool) {
+        if received == 0 {
+            return;
+        }
         self.report_times.record(at);
         self.submit.record(at.saturating_sub(received));
         if button {
@@ -163,6 +166,15 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn safety_neutral_reports_are_not_physical_input_samples() {
+        let metrics = Metrics::default();
+        metrics.submitted(0, 100_000, true, false);
+        assert_eq!(metrics.snapshot().hid_reports, 0);
+        assert_eq!(metrics.snapshot().button_to_submit.samples, 0);
+        metrics.submitted(50_000, 100_000, true, false);
+        assert_eq!(metrics.snapshot().input_to_submit.avg_us, Some(50.0));
+    }
     #[test]
     fn quantiles_and_empty_measurements_are_honest() {
         let samples = Samples::<128>::default();
