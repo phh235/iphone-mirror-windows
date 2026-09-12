@@ -39,6 +39,8 @@ static logger_t *logger = NULL;
 static unsigned short width, height, width_source, height_source;  /* not currently used */
 static bool first_packet = false;
 static bool sync = false;
+/* RTP payloaders need source timestamps even when presentation sync is off. */
+static bool rtp_timestamps = false;
 static bool auto_videosink = true;
 static bool hls_video = false;
 #ifdef X_DISPLAY_FIX
@@ -256,6 +258,7 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
     GstCaps *caps = NULL;
     bool rtp = (bool) strlen(rtp_pipeline);
     hls_video = (uri != NULL);
+    rtp_timestamps = rtp && !hls_video;
     /* videosink choices that are auto */
     auto_videosink = (strstr(videosink, "autovideosink") || strstr(videosink, "fpsdisplaysink"));
 
@@ -611,7 +614,7 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
     GstBuffer *buffer = NULL;
     GstClockTime pts = (GstClockTime) *ntp_time; /*now in nsecs */
     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
-    if (sync) {
+    if (sync || rtp_timestamps) {
         if (pts >= gst_video_pipeline_base_time) {
             pts -= gst_video_pipeline_base_time;
         } else {
@@ -640,7 +643,7 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
         buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
         g_assert(buffer != NULL);
         //g_print("video latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
-        if (sync) {
+        if (sync || rtp_timestamps) {
             GST_BUFFER_PTS(buffer) = pts;
         }
         gst_buffer_fill(buffer, 0, data, *data_len);
