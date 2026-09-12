@@ -4,6 +4,7 @@ use imirror_input_core::{Button, Controller, Input};
 use reqwest::{Method, Url, blocking::Client};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     io::Read,
     net::IpAddr,
     time::{Duration, Instant},
@@ -28,11 +29,20 @@ pub enum WdaError {
     Rejected(u16),
     #[error("Input is outside the device, too large, or unsupported by WDA")]
     InvalidInput,
+    #[error("WDA screen geometry changed with the session; reconnect control before tapping")]
+    GeometryChanged,
 }
 pub struct Wda {
     client: Client,
     endpoint: Url,
     session: Option<String>,
+    geometry_cache: Option<Size>,
+    requests: u64,
+    geometry_requests: u64,
+    tap_requests: u64,
+    tap_failures: u64,
+    tap_durations: VecDeque<Duration>,
+    last_geometry_request: Option<Duration>,
     pub last_request: Option<Duration>,
 }
 fn endpoint(text: &str) -> Result<Url, WdaError> {
@@ -71,10 +81,38 @@ impl Wda {
             client,
             endpoint,
             session: None,
+            geometry_cache: None,
+            requests: 0,
+            geometry_requests: 0,
+            tap_requests: 0,
+            tap_failures: 0,
+            tap_durations: VecDeque::with_capacity(64),
+            last_geometry_request: None,
             last_request: None,
         })
     }
     fn request(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, WdaError> {
+        let start = Instant::now();
+        self.requests += 1;
+        self.geometry_requests += u64::from(path.ends_with("/window/size"));
+        self.tap_requests += u64::from(path.ends_with("/wda/tap"));
+        let result = self.request_inner(method, path, body);
+        let elapsed = start.elapsed();
+        self.last_request = Some(elapsed);
+        if path.ends_with("/window/size") {
+            self.last_geometry_request = Some(elapsed);
+        }
+        if result.is_err() {
+            self.geometry_cache = None;
+        }
+        result
+    }
+    fn request_inner(
         &mut self,
         method: Method,
         path: &str,
@@ -88,9 +126,7 @@ impl Wda {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let start = Instant::now();
         let response = request.send().map_err(WdaError::Connection);
-        self.last_request = Some(start.elapsed());
         let response = response?;
         let status = response.status().as_u16();
         let mut bytes = Vec::new();
@@ -120,6 +156,7 @@ impl Wda {
         if let Some(session) = &self.session {
             return Ok(session.clone());
         }
+        self.geometry_cache = None;
         let response=self.request(Method::POST,"session",Some(&json!({
             "capabilities":{"alwaysMatch":{"shouldWaitForQuiescence":false,"waitForIdleTimeout":0}}
         })))?;
@@ -146,11 +183,21 @@ impl Wda {
         body: Option<&Value>,
     ) -> Result<Value, WdaError> {
         let session = self.ensure_session()?;
+        let previous_geometry = self.geometry_cache;
         let result = self.request(method.clone(), &format!("session/{session}/{path}"), body);
         // Only a definite invalid-session rejection is safe to replay. Never
         // repeat a tap/text/swipe after a timeout with an ambiguous outcome.
         if matches!(result, Err(WdaError::SessionExpired)) {
             let session = self.ensure_session()?;
+            if method == Method::POST
+                && matches!(path, "wda/tap" | "actions")
+                && let Some(previous) = previous_geometry
+                && self.geometry()? != previous
+            {
+                // The point was mapped against the old geometry. Don't replay
+                // it onto a rotated/replaced session's coordinate system.
+                return Err(WdaError::GeometryChanged);
+            }
             self.request(method, &format!("session/{session}/{path}"), body)
         } else {
             result
@@ -158,6 +205,32 @@ impl Wda {
     }
     pub fn status(&mut self) -> Result<Value, WdaError> {
         self.request(Method::GET, "status", None)
+    }
+    fn cached_geometry(&mut self) -> Result<Size, WdaError> {
+        match self.geometry_cache {
+            Some(size) => Ok(size),
+            None => self.geometry(),
+        }
+    }
+    pub fn diagnostics(&self) -> Value {
+        let mut samples: Vec<_> = self
+            .tap_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .collect();
+        samples.sort_by(f64::total_cmp);
+        let percentile =
+            |p: usize| (!samples.is_empty()).then(|| samples[(samples.len() - 1) * p / 100]);
+        json!({"requests":self.requests,"geometry_requests":self.geometry_requests,
+            "tap_requests":self.tap_requests,"tap_failures":self.tap_failures,
+            "geometry_cached":self.geometry_cache.is_some(),
+            "last_http_ms":self.last_request.map(|d|d.as_secs_f64()*1000.0),
+            "last_geometry_request_ms":self.last_geometry_request.map(|d|d.as_secs_f64()*1000.0),
+            "tap_dispatch":{"samples":samples.len(),"window_limit":64,
+                "avg_ms":(!samples.is_empty()).then(||samples.iter().sum::<f64>()/samples.len() as f64),
+                "p50_ms":percentile(50),"p95_ms":percentile(95),"p99_ms":percentile(99),
+                "last_ms":self.tap_durations.back().map(|d|d.as_secs_f64()*1000.0)},
+            "note":"Software WDA dispatch and HTTP timings, including failures; excludes UI queue time and physical display latency. No input contents are recorded."})
     }
     fn valid_point(p: Point, size: Size) -> bool {
         p.x.is_finite()
@@ -171,6 +244,7 @@ impl Wda {
 impl Controller for Wda {
     type Error = WdaError;
     fn geometry(&mut self) -> Result<Size, WdaError> {
+        self.geometry_cache = None;
         let response = self.session_request(Method::GET, "window/size", None)?;
         let width = response
             .pointer("/value/width")
@@ -183,19 +257,36 @@ impl Controller for Wda {
         if width <= 0.0 || height <= 0.0 || width > 16384.0 || height > 16384.0 {
             return Err(WdaError::InvalidResponse);
         }
-        Ok(Size { width, height })
+        let size = Size { width, height };
+        self.geometry_cache = Some(size);
+        Ok(size)
     }
     fn dispatch(&mut self, input: Input) -> Result<(), WdaError> {
+        let tap = matches!(&input, Input::Tap(_));
+        let start = Instant::now();
+        let result = self.dispatch_input(input);
+        if tap {
+            if self.tap_durations.len() == 64 {
+                self.tap_durations.pop_front();
+            }
+            self.tap_durations.push_back(start.elapsed());
+            self.tap_failures += u64::from(result.is_err());
+        }
+        result
+    }
+}
+impl Wda {
+    fn dispatch_input(&mut self, input: Input) -> Result<(), WdaError> {
         let (path, body) = match input {
             Input::Tap(p) => {
-                let size = self.geometry()?;
+                let size = self.cached_geometry()?;
                 if !Self::valid_point(p, size) {
                     return Err(WdaError::InvalidInput);
                 }
                 ("wda/tap", json!({"x":p.x,"y":p.y}))
             }
             Input::Swipe { from, to, duration } => {
-                let size = self.geometry()?;
+                let size = self.cached_geometry()?;
                 if !Self::valid_point(from, size)
                     || !Self::valid_point(to, size)
                     || duration > Duration::from_secs(5)
@@ -235,6 +326,8 @@ impl Controller for Wda {
         Ok(())
     }
 }
+#[cfg(test)]
+mod cache_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

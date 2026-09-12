@@ -64,6 +64,7 @@ pub struct Snapshot {
     pub ready: bool,
     pub transition_queue_depth: usize,
     pub diagnostics_error: Option<String>,
+    pub wda_metrics: Option<serde_json::Value>,
 }
 pub struct ControlManager {
     commands: Sender<Command>,
@@ -129,7 +130,7 @@ impl ControlManager {
                         Command::WdaConnect=>{
                             input.release();input.ready.store(false,Ordering::Release);ble_wanted=false;ble=None;wda=None;snapshot.mode=0;snapshot.geometry=None;selected_backend.store(0,Ordering::Release);
                             let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
-                            snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.message="Advanced control connected".into();
+                            snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();
                         },
                         Command::RefreshGeometry=>{if let Some(wda)=&mut wda{snapshot.geometry=Some(wda.geometry().map_err(|e|e.to_string())?);}},
                         Command::BleSelect(id)=>{input.release();ble.as_mut().ok_or("Control is off")?.select(&id).map_err(|e|e.to_string())?;},
@@ -200,6 +201,7 @@ impl ControlManager {
                 }
                 if save_at.is_some_and(|at|Instant::now()>=at){save_at=None;if writable{snapshot.pointer_settings_notice=crate::pointer_settings::save(input.sensitivity.load(Ordering::Relaxed)).err().map(|e|e.to_string());}}
                 if Instant::now()>=publish_at{
+                    snapshot.wda_metrics=wda.as_ref().map(Wda::diagnostics);
                     publish_at=Instant::now()+Duration::from_secs(1);snapshot.performance=input.metrics.snapshot();snapshot.pointer_speed_percent=input.sensitivity.load(Ordering::Relaxed);snapshot.pacing_interval_us=cadence_us;snapshot.captured=input.captured.load(Ordering::Acquire);
                     snapshot.ready=input.ready.load(Ordering::Acquire);snapshot.transition_queue_depth=input.transition_depth();
                     snapshot.diagnostics_error=diagnostic_state.error.lock().unwrap_or_else(|e|e.into_inner()).clone();
