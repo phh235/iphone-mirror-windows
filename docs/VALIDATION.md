@@ -14,7 +14,9 @@ clean-Windows public-release gate.
 | Keyboard | Real implementation and software tests | Separate physical typing/layout coverage is incomplete |
 | Native UI | Dark/light screenshots, app-owned five-DPI layout checks, small-window checks; supplied logo shown in main/Settings | Actual monitor changes, high contrast and 100-click physical stress remain pending |
 | Phone-shaped window and language | User confirmed portrait without side bars, Rotate landscape, fullscreen restore, language switching, proportional manual resize and reconnect refitting | [Exact geometry and build hash](WINDOW_LAYOUT_VALIDATION.md); real multi-monitor changes remain pending |
-| Software checks | Most recent pre-cleanup build passed fmt, strict Clippy, 52 Rust tests and release build | See engineering log for source revision and later check results |
+| Wireless video | User confirmed continuous 498x1080 video after RTP timestamp and encoded-queue corrections | [Exact build and failure history](WIRELESS_BLACK_SCREEN_DIAGNOSIS.md); not a 60 FPS or long-run acceptance test |
+| Advanced WDA | User confirmed Calculator 0 to 1 from a Windows click on the live Wireless image, USB used for WDA | One tap; drag, typing, runner renewal and unattended recovery remain untested |
+| Software checks | Current Wireless candidate passed fmt, strict Clippy, 56 Rust tests, six native CTest groups and release build | Hardware acceptance remains separate |
 | Packaged-folder launch | Latest retained app launched with system-only PATH after deleting build caches | Development PC, not a clean VM |
 
 The historical 30.056-second USB run recorded 1180×2556, 56.588 source FPS,
@@ -32,9 +34,9 @@ phone latency. No guaranteed 60 FPS, resolution or latency is claimed.
   with no duplicate commands; real DPI/theme/high-contrast checks.
 - Comparable 30-second mirror benchmark and sustained 30-minute USB/control
   tests with memory, handles, CPU, failures and reconnect measurements.
-- Wireless discovery, connection, video, actual source FPS and reconnect on a
-  real iPhone. Wireless 60 FPS has not been validated.
-- Optional WDA runner deployment and control validation.
+- Wireless loss/reconnect, sustained performance and additional real iPhones.
+  Wireless 60 FPS has not been validated.
+- Optional WDA drag/typing coverage, signing renewal and runner/tunnel lifecycle.
 - Exact installer/runtime/source-license bundle: install, launch, USB/control,
   wireless where supported, reboot, uninstall and reinstall on clean Windows.
 - Signing decision and a matching GPL corresponding-source archive before public

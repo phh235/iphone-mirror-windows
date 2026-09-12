@@ -624,3 +624,231 @@ change was made. See [validation details](STARTUP_SHUTDOWN_VALIDATION.md) for ex
 EXE identity, observations, limits and local evidence paths. Detailed failure
 history is preserved, including the initially optimistic user answer followed
 by the cannot-connect report.
+
+## 2026-09-12 — Windows WDA hardware setup and Wireless freeze diagnosis
+
+Prepared Appium WDA v16.12.8 and go-ios v1.3.2 from checksum-verified release
+assets. The user signed/installed WDA in Sideloadly using a personal Apple
+Account, enabled Developer Mode and trusted the developer profile. The initial
+Sideloadly Invalid file error later cleared; no specific fix for that signer
+error was established.
+
+Created a userspace RemoteXPC tunnel without installing a network driver. The
+developer image 27A5228h was stored separately in local AppData, with payloads
+checked against the pinned DeveloperDiskImage v0.3.0 repository. Apple TSS TLS
+failed because Apple Root CA was absent from the Windows user trust store.
+Downloaded the root from Apple's PKI site, verified its SHA-256
+`b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024`, and imported
+it into CurrentUser/Root with approval. TLS verification stayed enabled; image
+personalization and mounting then succeeded. No system-wide trust store change.
+
+The first real WDA launch failed with XCTest error 103. The device log explicitly
+identified a missing code signature in the nested WebDriverAgentRunner.xctest.
+A small native Go setup helper reused pinned go-ios transport to retrieve only
+the provisioning profile matching this phone, bundle and Sideloadly certificate;
+CMS signature and expiration checks passed. The profile expires September 19.
+Used the existing local signing identity to re-sign the whole WDA package with
+go-ios. The temporary P12 copy was removed; original Sideloadly files stayed
+unchanged. Verified CodeDirectory CMS signatures for the app, XCTest bundle and
+framework, then the phone accepted installation and loaded XCTest successfully.
+Signing keys, profiles, signed IPA, pairing records and raw phone logs stay in
+private AppData, outside this repository and release packaging.
+
+WDA HTTP uses USE_IP=127.0.0.1 and USE_PORT=8100. For this local experiment the
+optional screenshot broadcaster was assigned the occupied HTTP port; its log
+confirmed EADDRINUSE and that it did not start. This workaround is not a general
+production configuration. The setup helper forwards only 127.0.0.1:8100, with
+at most eight connections, avoiding upstream go-ios forward's wildcard bind.
+
+One real WDA tap at logical coordinates (58,656) selected Calculator key 1.
+HTTP returned 200 in 726.13 ms; this is one software request duration, not an
+end-to-end latency benchmark. Diagnostic screenshots showed 0 to 1 and the user
+explicitly confirmed the physical phone changed without their touch. USB mirror
+was off for this test. WDA standalone tap is verified; Rust UI click-to-WDA
+integration is not yet physically verified.
+
+Starting the existing QuickTime USB mirror removed the phone from USBMux and
+terminated the WDA tunnel on this host, while USB video continued. No native
+USB or driver modification was made. The user approved testing Wireless video
+with USB WDA instead. The existing receiver connected and decoded an initial
+498x1080 H.264 frame; WDA stayed ready and iMirror selected backend 2. The user
+then reported the Wireless picture froze, so this is not a successful live-video
+or combined-control acceptance test.
+
+A separate 15.108-second RTP metadata capture used the unchanged staged UxPlay
+and the exact production forwarding pipeline. It observed 662 packets, 496
+markers with 496 different payload CRCs, zero sequence gaps, and exactly one
+RTP timestamp. No video payload was persisted. Source review shows -vrtp skips
+the code that sets the renderer's sync flag, and PTS is only assigned when that
+flag is true. The Rust assembler correctly suppresses already-emitted timestamps,
+explaining the single displayed frame. A proposed patch enables source PTS in
+the RTP branch without changing sink synchronization or the Rust duplicate
+guard. After the user's explicit approval, applied this narrowly scoped RTP
+timestamp patch; USB, the Rust assembler, MF/D3D rendering, BLE and Raw Input
+sources are unchanged. Local experiment source/evidence is under work/wda-setup.
+
+Built the helper using scripts/build-airplay-helper.ps1 and the existing
+SHA-256-pinned UCRT package lock. This helper-only build preserves the existing
+runtime DLLs and does not rebuild FFmpeg/audio. The upstream -march=native
+configuration remains a public binary portability limitation; this is a local
+hardware-test candidate, not a portable public release.
+
+Ran cargo fmt --check, Clippy with all targets/features and warnings denied,
+cargo test (56 tests), and cargo build --release: all passed. The fresh Rust EXE
+is 3,256,320 bytes, SHA-256
+`afaf1234180d75a3ecbfed10d347fbb847ecf01e08ae99e76e17d466c24c3e65`.
+The patched UxPlay is 704,214 bytes, SHA-256
+`1221a519f639853a6aec494c8e40d1dd3dd344540c05285f13be75a3e91352dd`.
+Staged together in dist/wireless-wda-20260912 with the retained runtime and
+notices. Helper PE imports have no additions; application-local dependencies
+exist. Windows successfully resolves the imported UCRT API-set contracts (these
+are loader aliases, not missing physical DLLs). Other runtime files match the
+retained candidate. Receiver startup/shutdown smoke exited successfully with
+no phone stream; fixed timestamp behavior and combined Wireless/WDA physical
+acceptance still require the next phone test. No installer or clean-machine
+validation is implied.
+
+### Follow-up: varying RTP timestamps, but no displayed image
+
+The first patched physical probe received 682 packets, 596 markers, 596 distinct
+timestamps and 596 distinct payload CRCs in 15.0009086 seconds; no sequence gaps
+or malformed packets. This confirms that the constant-timestamp defect changed,
+not successful decoding or display. The user then ran the staged EXE (PID 14356)
+and reported no mirror image. Their diagnostics showed WDA ready, 498x1080 input,
+764 submitted source frames, state 2 (WaitingForDevice), zero decode time and
+software decoder status. The source counter increments before native decoding;
+the software status alone is not proof of a completed software-decoded frame.
+The native log showed decoder configuration but no decoded/rendered frame.
+
+The RTP probe's first timestamp also jumped far from the next frame. Source
+inspection and a regression test of the actual video_process callback reproduced
+a second defect: on a pipeline-clock underflow retry it adds the entire remote
+clock offset to an already-adjusted timestamp. The test delivered 20 seconds
+then 16.64 milliseconds for two consecutive source frames. Saving the original
+remote time before the retry makes those outputs 0 and 16.64 milliseconds;
+the ordinary no-retry case also passes. The test uses a simulated renderer clock
+and is explicitly not physical video acceptance.
+
+Changed only the UxPlay callback for that retry correction. Rebuilt UxPlay and
+reran fmt, Clippy with warnings denied, all 56 Rust tests and release build:
+PASS. The new helper SHA-256 is
+`ec6f5e4a3022970bb682f5a6e92d9a601f6bc25b7a8a6456deb3539179199c32`.
+The Rust EXE is unchanged from the preceding rebuild. Staged the second candidate
+in dist/wireless-wda-clock2-20260912 and started its existing AirPlay benchmark
+with preview and separate native logs. It records source and render submissions
+using the unchanged application path. This candidate still awaits phone video
+acceptance; no decoder, renderer, USB, BLE or control-manager change was made.
+
+The second candidate's 120-second AirPlay benchmark also failed: the user
+reported an entirely black window. It submitted 1,521 encoded source frames but
+zero render frames, ending with "Encoded frames arrived but no decoded frame
+was confirmed". Native logs only show decoder configuration. Timestamp fixes
+therefore do not establish that Wireless video works. Investigating the existing
+three-slot EncodedSession queue with an instrumented local copy under
+work/wireless-decode-probe; frozen production source is unchanged. The probe
+counts overflow, waiting-for-keyframe drops, decode calls/results and generation
+changes, using the existing H.264 assembler and real native decoder. It saves
+metadata only and neither renders phone images nor sends WDA input.
+
+The instrumented physical run has now isolated the black-screen mechanism:
+807 assembled/submitted frames, one keyframe, zero parser errors/drops and zero
+negative timestamp deltas. Decoder configuration ran once; its one decode call
+successfully returned one decoded frame with no exception. Meanwhile the
+three-slot encoded queue overflowed once, incrementing generation. The decoded
+frame was discarded by the subsequent generation check; 803 later frames were
+discarded while waiting for another keyframe. State remained WaitingForDevice.
+Thus the decoder did work, but no decoded frame was published for rendering.
+The queue probe has exited and stored counters only, with no phone image dump.
+
+The needed follow-up is in the separate Wireless EncodedSession queue/startup
+handling, not USB CaptureSession, the shared MF decoder or D3D renderer. This
+extends beyond the specifically approved UxPlay timestamp patch and touches
+previously frozen video buffering. No production queue change has been applied.
+See WIRELESS_BLACK_SCREEN_DIAGNOSIS.md for evidence and the scoped next change.
+
+The user subsequently approved the focused Wireless queue correction and asked
+to proceed without repeated permission questions. Added EncodedFrameQueue:
+startup at most 32 queued packets / 16 MiB payloads / 500 ms receive age, then
+ordered drain and return to three packets / 250 ms age in steady streaming.
+This absorbs the observed approximately 132 ms cold decoder configuration
+without intentionally waiting or changing source timestamps. Startup allocations
+are released as packets drain; steady streaming keeps reusable buffers. Genuine
+overflow/expiry still requires a new keyframe but now sets an explicit Wireless
+error. Generation validation/publication is serialized with stop/reset.
+
+Only Wireless EncodedSession, the new queue header and focused native test/CMake
+registration changed. USB CaptureSession, transport, MF decoder, D3D renderer,
+BLE, Raw Input and WDA files remain unchanged. A deterministic queue test covers
+20 packets arriving while consumption is stalled, FIFO preservation while
+draining, count/byte/age limits, and 100 reset/wrap cycles. All six native CTest
+groups pass, including encoded fixture decoding; fmt, warnings-denied Clippy,
+56 Rust tests and release build also pass. Receiver start/stop and staged PE
+dependency checks pass on this development host, not a clean Windows VM.
+
+Opened the new candidate's existing AirPlay benchmark with preview. EXE:
+dist/wireless-startup-fix-20260912/iMirror.exe, 3,259,392 bytes, SHA-256
+`6c9d412596ec4a15126a436b023c0ea13f46bfb7f1b864fcd469a1004ba0c1d3`.
+Helper SHA remains
+`ec6f5e4a3022970bb682f5a6e92d9a601f6bc25b7a8a6456deb3539179199c32`.
+Physical video and combined WDA click are pending; no success inferred from the
+software tests. Details and limitations are in WIRELESS_BLACK_SCREEN_DIAGNOSIS.md.
+
+The startup candidate rendered initially but the user reported it froze at the
+connection image. Samples showed 15/27/39 received frames over consecutive
+200 ms intervals; render submissions stopped at 18 and status entered queue
+recovery (-3002). Final benchmark JSON had no top-level error despite the stall,
+so that field is not used as a success gate. The original three-packet streaming
+limit, restored after startup, is insufficient for this delivery/scheduling.
+
+Retained startup bounds and changed only the compressed streaming bound to 16
+packets, still constrained by 16 MiB queued payloads and 250 ms receive age.
+Decoding remains immediate and the decoded latest-frame renderer is unchanged.
+Added recovery-reason logging and once-per-second native decode/queue metrics
+to verify the next run rather than guessing from a static image. Extended the
+queue test with a bounded 16-packet streaming burst; all six native test groups
+pass. The next exact release and real-device run are pending.
+
+The burst candidate is now built and staged at
+dist/wireless-burst-fix-20260912/iMirror.exe (3,260,416 bytes), SHA-256
+`6c73b777548caeb5c1f97fee77d6c5431a8d050cab04a84ea1e4c0a179baa2cf`.
+Fmt, warnings-denied Clippy, 56 Rust tests, release build and all six native
+CTest groups passed. UxPlay remains the clock-corrected helper with SHA-256
+`ec6f5e4a3022970bb682f5a6e92d9a601f6bc25b7a8a6456deb3539179199c32`.
+Runtime checks and receiver startup/shutdown passed on this host. Started the
+existing preview benchmark with fresh logs under local AppData
+iMirror-WDA/wireless-burst-fix-20260912. Physical continuous video remains
+pending; no WDA click was sent and no USB/BLE/decoder/renderer code changed.
+
+The user confirmed continuous visible updates with the burst candidate. The
+120-second scripted run (including idle phone intervals) recorded 1,285 encoded
+source frames and continued decoded publication; the last periodic log counted
+1,284 published frames. Peak encoded queue was four during startup and ten during
+streaming, below the new 16-packet streaming bound but above the former limit of
+three. No encoded_queue_recovery or MF runtime_failure occurred. Source was
+498x1080. Whole-run source rate was 11.875/s including static intervals, not a
+60 FPS full-motion validation. Render-submission rate was 11.280/s; internal D3D
+logs also contain repeated submissions and implausible display-FPS readings,
+which are not used as unique displayed/source FPS evidence. Last sampled decode
+time was 2.518 ms. The native diagnostic label says software because it is cached
+at configuration; actual hardware acceleration was not independently verified.
+Short-run Wireless visible video is PASS by user confirmation, not long-run,
+loss/reconnect, USB regression or clean-machine acceptance.
+
+The old WDA runner exited at 22:07:48 with EOF/lost testmanagerd; exact phone-side
+cause is unknown. Reused the existing USB tunnel, trusted signed runner and
+loopback forwarder to restart it, without re-signing or sending input. WDA status
+is ready again. Opened the exact burst candidate in its normal native UI; current
+settings select Wireless and WDA, backend 2 reports ready and no error. Next is
+the user's one Calculator key-1 click through the live mirrored UI. That
+integration is still UNTESTED. Numeric evidence is retained in
+work/wda-setup/wireless-video-acceptance.json; private runtime logs stay in AppData.
+
+The user has now confirmed the integrated physical test: with the normal native
+iMirror UI showing live Wireless video and WDA ready over USB, a Windows click
+on Calculator key 1 changed the physical phone from 0 to 1. Record integrated
+Wireless-video + WDA-tap as PASS for this exact burst candidate. No extra input
+was sent after confirmation. Integrated tap latency was not measured; drag,
+keyboard, unattended WDA recovery, long-term stability and clean-machine release
+remain unvalidated. The native UI run continued publishing decoded frames with
+no current queue recovery error. USB/BLE/Raw Input and shared decoder/renderer
+source files remain unchanged by this Wireless fix.

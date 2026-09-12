@@ -116,7 +116,7 @@ Fit shows the entire image. 1:1 uses one source pixel per display pixel. Fill
 can crop the image edges. Changing connection mode disconnects the active
 session. Changes save automatically; Done closes Settings.
 
-## Wireless (pending physical validation)
+## Wireless
 
 Put both devices on the same local network. Select **Settings → Connection →
 Wireless**, set the receiver name, close Settings and click **Connect**. On
@@ -126,6 +126,8 @@ the firewall globally. Guest-network isolation can prevent discovery.
 
 Wireless needs the supplied private runtime. Bluetooth carries control, not
 video. A requested frame rate is not proof of actual wireless source FPS.
+Live video is confirmed on one iPhone; long-run and network-loss/reconnect
+coverage remain pending. See [the tested build and limits](WIRELESS_BLACK_SCREEN_DIAGNOSIS.md).
 
 ## Troubleshooting
 
@@ -157,8 +159,14 @@ WebDriverAgent runner and a working local connection at `http://127.0.0.1:8100`.
 The WDA option then appears in Control settings. Phone-side signing and Developer
 Mode requirements apply; deployment uses an appropriate Apple signing identity.
 iMirror does not provide signing credentials or bundle a runner. Normal USB and
-Bluetooth Mouse operation does not need WDA. This project's WDA path still needs
-physical validation.
+Bluetooth Mouse operation does not need WDA. One Windows click on live Wireless
+video has been confirmed to tap the physical iPhone through WDA. Drag, typing
+and unattended runner recovery remain untested.
+
+For the validated combination, use **Wireless video + USB for WDA**. QuickTime
+USB mirroring interrupted the WDA USB tunnel on the tested host. WDA's runner
+and tunnel currently need separate setup and supervision; they are not
+automatically deployed or renewed by iMirror.
 
 ## Uninstall or reset
 

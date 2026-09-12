@@ -3,8 +3,9 @@
 [English guide](docs/USER_GUIDE.md) · [README](README.md)
 
 iMirror phản chiếu màn hình iPhone lên Windows và hỗ trợ điều khiển bằng chuột,
-bàn phím qua Bluetooth. USB và chuột tương đối đã được thử trên iPhone thật;
-khả năng tương thích nhiều thiết bị, Wireless và bộ cài trên Windows sạch vẫn
+bàn phím qua Bluetooth. USB, chuột tương đối, video Wireless và một click WDA
+trên hình live đã được thử trên iPhone thật. Độ ổn định dài hạn,
+khả năng tương thích nhiều thiết bị và bộ cài trên Windows sạch vẫn
 cần kiểm chứng. Xem [trạng thái kiểm thử](docs/VALIDATION.md).
 
 ## 1. Chuẩn bị và mở ứng dụng
@@ -131,7 +132,7 @@ cảm giác khác Windows; tăng độ nhạy không loại bỏ độ trễ Blu
 - **Advanced:** Diagnostics, Copy Diagnostics và các tùy chọn nâng cao. Cài đặt
   thông thường được lưu tự động; dùng Done để đóng cửa sổ.
 
-## 7. Wireless — còn cần kiểm chứng trên thiết bị thật
+## 7. Wireless
 
 1. Cho PC và iPhone vào cùng mạng nội bộ.
 2. Trong **Settings → Connection**, chọn **Wireless** và đặt **Receiver name**.
@@ -142,8 +143,14 @@ cảm giác khác Windows; tăng độ nhạy không loại bỏ độ trễ Blu
    cần tắt tường lửa toàn bộ.
 
 USB và Wireless dùng kết nối khác nhau. Ghép Bluetooth chỉ phục vụ điều khiển,
-không truyền video. Wireless cần runtime đi kèm đầy đủ; hiện chưa có kết quả
-FPS/độ trễ được xác nhận trên iPhone thật cho đường này.
+không truyền video. Wireless cần runtime đi kèm đầy đủ. Hình live đã được xác nhận
+trên một iPhone; chưa xác nhận 60 FPS, độ trễ đầu-cuối hay độ ổn định dài hạn.
+Xem [bản đã thử và giới hạn](docs/WIRELESS_BLACK_SCREEN_DIAGNOSIS.md).
+
+Nếu dùng WDA nâng cao, tổ hợp đã thử là **video Wireless + USB cho WDA**.
+Một click trên hình live đã tác động đúng lên iPhone; kéo và gõ bằng WDA chưa
+được kiểm chứng. USB QuickTime làm ngắt tunnel WDA trên máy đã thử, nên không
+dùng đồng thời hai đường USB đó. Runner/tunnel WDA hiện vẫn cần thiết lập riêng.
 
 ## 8. Xử lý lỗi
 
