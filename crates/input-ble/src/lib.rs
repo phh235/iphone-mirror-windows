@@ -1,11 +1,15 @@
 //! WinRT HID-over-GATT. Report design adapted from MIT windows-ble-hid.
 //! Copyright (c) 2026 Abhishek Raj; upstream notice is in vendor/licenses.
 mod enumeration;
+mod peer;
 use enumeration::{Connections, Metadata, Trace, WriteKind, install_read};
 pub use enumeration::{Event, Observation, Peer};
 use serde::Serialize;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use windows::{
@@ -48,6 +52,12 @@ pub enum BluetoothError {
     Disconnected,
     #[error("The selected target has not subscribed to the keyboard report.")]
     NoKeyboardSubscriber,
+    #[error("HID notification failed: status={status}, bytes={bytes}/{expected}")]
+    Notification {
+        status: i32,
+        bytes: u16,
+        expected: usize,
+    },
 }
 fn bluetooth_error_name(code: i32) -> &'static str {
     match code {
@@ -253,14 +263,119 @@ struct Report {
     value: Arc<Mutex<Vec<u8>>>,
     read_token: i64,
     subscription_token: i64,
+    completed: Arc<NotifyEvent>,
+}
+struct NotifyEvent(windows::Win32::Foundation::HANDLE);
+// SAFETY: Windows events are thread-safe kernel objects, retained by Arc across COM callbacks.
+unsafe impl Send for NotifyEvent {}
+// SAFETY: The handle is immutable and only kernel synchronization APIs access it.
+unsafe impl Sync for NotifyEvent {}
+impl NotifyEvent {
+    fn new() -> windows::core::Result<Arc<Self>> {
+        // SAFETY: Unnamed auto-reset event; no borrowed attributes.
+        unsafe {
+            Ok(Arc::new(Self(
+                windows::Win32::System::Threading::CreateEventW(
+                    None,
+                    false,
+                    false,
+                    windows::core::PCWSTR::null(),
+                )?,
+            )))
+        }
+    }
+    fn pulse(&self) {
+        // SAFETY: Arc keeps the event open until all callbacks release it.
+        unsafe {
+            let _ = windows::Win32::System::Threading::SetEvent(self.0);
+        }
+    }
+}
+impl Drop for NotifyEvent {
+    fn drop(&mut self) {
+        // SAFETY: Last owner closes the event once.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
 }
 impl Report {
+    fn client(&self, target: &str) -> Result<Option<GattSubscribedClient>, BluetoothError> {
+        for client in self.characteristic.SubscribedClients()? {
+            if client.Session()?.DeviceId()?.Id()? == target
+                && client.Session()?.SessionStatus()? == GattSessionStatus::Active
+            {
+                return Ok(Some(client));
+            }
+        }
+        Ok(None)
+    }
+    fn cached_send(
+        &self,
+        client: &GattSubscribedClient,
+        active: &AtomicBool,
+        bytes: &[u8],
+        before_notify: impl FnOnce(),
+    ) -> Result<(), BluetoothError> {
+        if !active.load(Ordering::Acquire) {
+            return Err(BluetoothError::Disconnected);
+        }
+        self.value
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .copy_from_slice(bytes);
+        // A small WinRT IBuffer is owned by each async operation. Do not mutate/reuse
+        // an IBuffer while the Windows stack might still retain it. Rust report bytes are fixed-size.
+        let payload = buffer(bytes)?;
+        before_notify();
+        let operation = self
+            .characteristic
+            .NotifyValueForSubscribedClientAsync(&payload, client)?;
+        let done = self.completed.clone();
+        operation.SetCompleted(&windows_future::AsyncOperationCompletedHandler::<
+            GattClientNotificationResult,
+        >::new(move |_, _| {
+            done.pulse();
+            Ok(())
+        }))?;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while operation.Status()? == windows_future::AsyncStatus::Started {
+            if !active.load(Ordering::Acquire) || Instant::now() >= deadline {
+                let _ = operation.Cancel();
+                active.store(false, Ordering::Release);
+                return Err(BluetoothError::Disconnected);
+            }
+            let remaining = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .clamp(1, 250) as u32;
+            // SAFETY: Cached completion event is owned by this Report and COM callback.
+            let waited = unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(self.completed.0, remaining)
+            };
+            if waited == windows::Win32::Foundation::WAIT_FAILED {
+                return Err(windows::core::Error::from_win32().into());
+            }
+        }
+        let result = operation.GetResults()?;
+        let status = result.Status()?;
+        let sent = result.BytesSent()?;
+        if status != GattCommunicationStatus::Success || usize::from(sent) != bytes.len() {
+            return Err(BluetoothError::Notification {
+                status: status.0,
+                bytes: sent,
+                expected: bytes.len(),
+            });
+        }
+        Ok(())
+    }
     fn new(
         service: &GattLocalService,
         id: u8,
         size: usize,
         trace: Trace,
     ) -> Result<Self, BluetoothError> {
+        let completed = NotifyEvent::new()?;
         let characteristic = characteristic(
             service,
             0x2a4d,
@@ -299,6 +414,7 @@ impl Report {
             value,
             read_token,
             subscription_token,
+            completed,
         };
         let descriptor = GattLocalDescriptorParameters::new()?;
         descriptor.SetReadProtectionLevel(GattProtectionLevel::EncryptionRequired)?;
@@ -359,6 +475,8 @@ pub struct HidPeripheral {
     keyboard: Report,
     mouse: Report,
     target: Option<String>,
+    peer: Option<peer::Peer>,
+    wake: Arc<dyn Fn() + Send + Sync>,
     _metadata: Vec<Metadata>,
     _connections: Connections,
     trace: Trace,
@@ -469,6 +587,8 @@ impl HidPeripheral {
             keyboard,
             mouse,
             target: None,
+            peer: None,
+            wake: Arc::new(|| {}),
             _metadata: metadata,
             _connections: connections,
             trace,
@@ -578,6 +698,9 @@ impl HidPeripheral {
             return Err(BluetoothError::NoTarget);
         }
         self.target = Some(id.to_owned());
+        let mouse = self.mouse.client(id)?.ok_or(BluetoothError::NoTarget)?;
+        let keyboard = self.keyboard.client(id)?;
+        self.peer = Some(peer::Peer::new(mouse, keyboard, id, self.wake.clone())?);
         self.trace
             .note(format!("Selected actual mouse report subscriber: {id}"));
         Ok(())
@@ -613,6 +736,69 @@ impl HidPeripheral {
             let _ = self.mouse.send(target, &[0; 6]);
             let _ = self.keyboard.send(target, &[0; 8]);
         }
+    }
+    pub fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let mouse = self.mouse.completed.clone();
+        let keyboard = self.keyboard.completed.clone();
+        self.wake = Arc::new(move || {
+            mouse.pulse();
+            keyboard.pulse();
+            wake();
+        });
+    }
+    pub fn cached_ready(&self) -> bool {
+        self.peer
+            .as_ref()
+            .is_some_and(|p| p.active.load(Ordering::Acquire))
+            && self.trace.protocol_ready()
+    }
+    pub fn connection_interval_us(&self) -> Option<u64> {
+        self.peer.as_ref().and_then(|p| p.interval_us())
+    }
+    pub fn refresh_cached_keyboard(&mut self) -> Result<(), BluetoothError> {
+        if let (Some(peer), Some(id)) = (&mut self.peer, &self.target)
+            && peer.keyboard.is_none()
+        {
+            peer.keyboard = self.keyboard.client(id)?;
+        }
+        Ok(())
+    }
+    pub fn mouse_cached(
+        &self,
+        buttons: u8,
+        dx: i32,
+        dy: i32,
+        wheel: i32,
+        before_notify: impl FnOnce(),
+    ) -> Result<(), BluetoothError> {
+        let peer = self.peer.as_ref().ok_or(BluetoothError::NoTarget)?;
+        if !self.trace.protocol_ready() {
+            return Err(BluetoothError::Disconnected);
+        }
+        self.mouse.cached_send(
+            &peer.mouse,
+            &peer.active,
+            &mouse_report(buttons, dx, dy, wheel),
+            before_notify,
+        )
+    }
+    pub fn keyboard_cached(
+        &self,
+        modifiers: u8,
+        keys: &[u8],
+        before_notify: impl FnOnce(),
+    ) -> Result<(), BluetoothError> {
+        let peer = self.peer.as_ref().ok_or(BluetoothError::NoTarget)?;
+        let client = peer
+            .keyboard
+            .as_ref()
+            .ok_or(BluetoothError::NoKeyboardSubscriber)?;
+        self.keyboard.cached_send(
+            client,
+            &peer.active,
+            &keyboard_report(modifiers, keys),
+            before_notify,
+        )
     }
 }
 impl Drop for HidPeripheral {

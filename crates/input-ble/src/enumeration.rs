@@ -3,7 +3,10 @@ use super::{BluetoothError, Bounded, buffer, characteristic};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use windows::{
@@ -86,14 +89,26 @@ impl Drop for SessionWatch {
         let _ = self.session.RemoveSessionStatusChanged(self.token);
     }
 }
-#[derive(Default)]
 struct Inner {
     observation: Mutex<Observation>,
     sessions: Mutex<Vec<SessionWatch>>,
+    protocol_ready: AtomicBool,
+}
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            observation: Mutex::new(Observation::default()),
+            sessions: Mutex::new(Vec::new()),
+            protocol_ready: AtomicBool::new(true),
+        }
+    }
 }
 #[derive(Clone, Default)]
 pub(crate) struct Trace(Arc<Inner>);
 impl Trace {
+    pub fn protocol_ready(&self) -> bool {
+        self.0.protocol_ready.load(Ordering::Acquire)
+    }
     pub fn snapshot(&self) -> Observation {
         self.0
             .observation
@@ -332,6 +347,10 @@ impl Metadata {
                                     WriteKind::None => {}
                                 }
                                 state.event(format!("WriteRequested: {name} = {command}"));
+                                event_trace.0.protocol_ready.store(
+                                    state.protocol_mode == 1 && !state.suspended,
+                                    Ordering::Release,
+                                );
                             } else {
                                 event_trace.note(format!(
                                     "Rejected malformed {name} write (length/offset/value)"

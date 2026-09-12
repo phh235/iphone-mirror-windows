@@ -1,5 +1,5 @@
 //! Linear relative-pointer gain. Integer residuals preserve slow movement.
-pub const DEFAULT_POINTER_SPEED: u16 = 25;
+pub const DEFAULT_POINTER_SPEED: u16 = 100;
 pub const MIN_POINTER_SPEED: u16 = 5;
 pub const MAX_POINTER_SPEED: u16 = 200;
 #[derive(Debug)]
@@ -46,6 +46,7 @@ mod tests {
     #[test]
     fn tiny_moves_accumulate_without_drift() {
         let mut p = PointerScale::default();
+        p.set_percent(25);
         let mut sum = (0, 0);
         for _ in 0..1000 {
             let (x, y) = p.scale(1, -1);
@@ -58,6 +59,7 @@ mod tests {
     #[test]
     fn reversal_cancels_fractional_motion() {
         let mut p = PointerScale::default();
+        p.set_percent(25);
         assert_eq!(p.scale(3, -3), (0, 0));
         assert_eq!(p.scale(-3, 3), (0, 0));
         assert_eq!(p.scale(4, -4), (1, -1));
@@ -65,6 +67,7 @@ mod tests {
     #[test]
     fn capture_and_speed_changes_discard_residuals() {
         let mut p = PointerScale::default();
+        p.set_percent(25);
         p.scale(3, 3);
         p.reset();
         assert_eq!(p.scale(1, 1), (0, 0));
