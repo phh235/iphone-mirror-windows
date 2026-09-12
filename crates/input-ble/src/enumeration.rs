@@ -93,6 +93,7 @@ struct Inner {
     observation: Mutex<Observation>,
     sessions: Mutex<Vec<SessionWatch>>,
     protocol_ready: AtomicBool,
+    epoch: Arc<super::subscription::Epoch>,
 }
 impl Default for Inner {
     fn default() -> Self {
@@ -100,12 +101,19 @@ impl Default for Inner {
             observation: Mutex::new(Observation::default()),
             sessions: Mutex::new(Vec::new()),
             protocol_ready: AtomicBool::new(true),
+            epoch: Arc::new(super::subscription::Epoch::default()),
         }
     }
 }
 #[derive(Clone, Default)]
 pub(crate) struct Trace(Arc<Inner>);
 impl Trace {
+    pub fn epoch(&self) -> Arc<super::subscription::Epoch> {
+        self.0.epoch.clone()
+    }
+    pub fn invalidate(&self) {
+        self.0.epoch.invalidate();
+    }
     pub fn protocol_ready(&self) -> bool {
         self.0.protocol_ready.load(Ordering::Acquire)
     }
@@ -347,10 +355,13 @@ impl Metadata {
                                     WriteKind::None => {}
                                 }
                                 state.event(format!("WriteRequested: {name} = {command}"));
-                                event_trace.0.protocol_ready.store(
-                                    state.protocol_mode == 1 && !state.suspended,
-                                    Ordering::Release,
-                                );
+                                let ready = state.protocol_mode == 1 && !state.suspended;
+                                drop(state);
+                                if event_trace.0.protocol_ready.swap(ready, Ordering::AcqRel)
+                                    != ready
+                                {
+                                    event_trace.invalidate();
+                                }
                             } else {
                                 event_trace.note(format!(
                                     "Rejected malformed {name} write (length/offset/value)"

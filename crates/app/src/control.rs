@@ -61,6 +61,9 @@ pub struct Snapshot {
     pub high_resolution_wait: bool,
     pub captured: bool,
     pub emergency_shortcut_available: bool,
+    pub ready: bool,
+    pub transition_queue_depth: usize,
+    pub diagnostics_error: Option<String>,
 }
 pub struct ControlManager {
     commands: Sender<Command>,
@@ -72,6 +75,7 @@ pub struct ControlManager {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     log_thread: Option<JoinHandle<()>>,
+    pub diagnostics: Arc<crate::diagnostics::Store>,
 }
 impl ControlManager {
     pub fn start() -> Result<Self, Box<dyn std::error::Error>> {
@@ -84,29 +88,19 @@ impl ControlManager {
             Err(error) => (None, Some(error)),
         };
         let hotkey = raw.as_ref().is_some_and(RawInput::hotkey_ready);
+        let invalidation = raw
+            .as_ref()
+            .map(RawInput::invalidation_handler)
+            .unwrap_or_else(|| {
+                let input = mailbox.clone();
+                Arc::new(move || input.invalidate())
+            });
         let (commands, incoming) = bounded::<Command>(16);
         let (outgoing, snapshots) = bounded(1);
         let replace = snapshots.clone();
         let (log_tx, log_rx) = bounded::<Snapshot>(1);
-        let log_thread=thread::Builder::new().name("imirror-control-diagnostics".into()).spawn(move||{
-            use std::io::Write;
-            let path=diagnostic_path();let mut samples=path.as_ref().and_then(|p|std::fs::OpenOptions::new().create(true).append(true).open(p.with_extension("samples.jsonl")).ok());
-            while let Ok(snapshot)=log_rx.recv(){
-                if let Some(path)=&path && let Ok(json)=serde_json::to_vec_pretty(&serde_json::json!({
-                    "process_id":std::process::id(),"input_source":"WM_INPUT / Raw Input","monotonic_ns":now_ns(),
-                    "ble":snapshot.ble,"error":snapshot.ble_error,"last_diagnostic":snapshot.last_diagnostic,
-                    "pointer_speed_percent":snapshot.pointer_speed_percent,"performance":snapshot.performance,
-                    "connection_interval_us":snapshot.connection_interval_us,"pacing_interval_us":snapshot.pacing_interval_us,
-                    "high_resolution_wait":snapshot.high_resolution_wait,"captured":snapshot.captured,"emergency_shortcut_available":snapshot.emergency_shortcut_available
-                })){
-                    if let Some(parent)=path.parent(){let _=std::fs::create_dir_all(parent);}
-                    let _=std::fs::write(path,json);
-                }
-                if let Some(file)=&mut samples && let Ok(json)=serde_json::to_vec(&serde_json::json!({"monotonic_ns":now_ns(),"performance":snapshot.performance,"pacing_interval_us":snapshot.pacing_interval_us,"captured":snapshot.captured})){
-                    let _=file.write_all(&json);let _=file.write_all(b"\n");let _=file.flush();
-                }
-            }
-        })?;
+        let (log_thread, diagnostics) = crate::diagnostics::start_writer(log_rx)?;
+        let diagnostic_state = diagnostics.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let backend = Arc::new(AtomicU8::new(0));
@@ -115,6 +109,7 @@ impl ControlManager {
         let initial_error = raw_error.clone();
         let thread=thread::Builder::new().name("imirror-control".into()).spawn(move||{
             let mut snapshot=Snapshot{emergency_shortcut_available:hotkey,..Snapshot::default()};
+            if let Some(error)=&initial_error{snapshot.ble_error=Some(error.clone());snapshot.message=error.clone();}
             let (speed,writable)=match crate::pointer_settings::load(){Ok(speed)=>(speed,true),Err(error)=>{snapshot.pointer_settings_notice=Some(error.to_string());(100,false)}};
             input.sensitivity.store(speed,Ordering::Relaxed);snapshot.pointer_speed_percent=speed;
             let _mta=match imirror_platform_windows::Mta::new(){Ok(mta)=>mta,Err(error)=>{snapshot.message=error.to_string();let _=outgoing.send(snapshot);return;}};
@@ -133,7 +128,7 @@ impl ControlManager {
                         Command::WdaConnect=>{
                             input.release();input.ready.store(false,Ordering::Release);ble_wanted=false;ble=None;wda=None;snapshot.mode=0;snapshot.geometry=None;selected_backend.store(0,Ordering::Release);
                             let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
-                            snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);snapshot.message="Control connected".into();
+                            snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.message="Advanced control connected".into();
                         },
                         Command::RefreshGeometry=>{if let Some(wda)=&mut wda{snapshot.geometry=Some(wda.geometry().map_err(|e|e.to_string())?);}},
                         Command::BleSelect(id)=>{input.release();ble.as_mut().ok_or("Control is off")?.select(&id).map_err(|e|e.to_string())?;},
@@ -147,24 +142,27 @@ impl ControlManager {
                         },
                         Command::Action(action)=>{wda.as_mut().ok_or("Advanced control is not connected")?.dispatch(action).map_err(|e|e.to_string())?;}
                     }Ok(())})();
-                    if let Err(error)=result{snapshot.message=error.clone();snapshot.ble_error=Some(error);}
+                    if let Err(error)=result{if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;}snapshot.message=error.clone();snapshot.ble_error=Some(error);}
                 }
                 if ble_wanted && ble.is_none() && Instant::now()>=retry_at{
-                    match HidPeripheral::start(&mut snapshot.ble){Ok(mut service)=>{let wake=signal.clone();service.set_waker(Arc::new(move||wake.pulse()));ble=Some(service);diagnostics_at=Instant::now();snapshot.ble_error=None;},Err(error)=>{snapshot.ble_error=Some(error.to_string());snapshot.message=error.to_string();retry_at=Instant::now()+Duration::from_secs(3);}}
+                    match HidPeripheral::start(&mut snapshot.ble){Ok(mut service)=>{let wake=signal.clone();service.set_waker(Arc::new(move||wake.pulse()));service.set_invalidation_handler(invalidation.clone());ble=Some(service);diagnostics_at=Instant::now();snapshot.ble_error=None;},Err(error)=>{snapshot.ble_error=Some(error.to_string());snapshot.message=error.to_string();retry_at=Instant::now()+Duration::from_secs(3);}}
                 }
                 if let Some(service)=&mut ble{
                     if Instant::now()>=diagnostics_at{
                         diagnostics_at=Instant::now()+Duration::from_millis(500);
+                        if let Err(error)=service.validate_subscriptions(){service.invalidate();snapshot.ble_error=Some(error.to_string());}
                         match service.diagnostics(){Ok(mut d)=>{
-                            if d.mouse_subscribers.len()==1 && (d.selected_target.is_none()||!service.cached_ready()) && d.started_observed{
+                            if d.mouse_subscribers.len()==1 && !service.cached_ready() && d.advertising_status=="STARTED" && d.enumeration.protocol_mode==1 && !d.enumeration.suspended{
                                 let id=d.mouse_subscribers[0].clone();match service.select(&id){Ok(())=>{d.selected_target=Some(id);snapshot.ble_error=None;},Err(error)=>snapshot.ble_error=Some(error.to_string())}
                             }
-                            let _=service.refresh_cached_keyboard();snapshot.ble_clients=d.mouse_subscribers.clone();
+                            snapshot.ble_clients=d.mouse_subscribers.clone();
                             snapshot.message=if service.cached_ready(){"Control ready. Click the video to capture; Ctrl+Alt+Q releases.".into()}else if d.advertising_status=="STARTED"{"Pair this PC with your iPhone in Bluetooth settings, then enable AssistiveTouch.".into()}else{d.guidance().into()};snapshot.ble=d;
-                        },Err(error)=>{snapshot.ble_error=Some(error.to_string());input.ready.store(false,Ordering::Release);input.release();}}
+                        },Err(error)=>{snapshot.ble_error=Some(error.to_string());service.invalidate();}}
                     }
                     let ready=service.cached_ready() && hotkey;
                     if input.ready.swap(ready,Ordering::AcqRel)&&!ready{input.release();}
+                    // An invalidation callback racing the publication must win.
+                    if !service.cached_ready(){input.ready.store(false,Ordering::Release);}
                     snapshot.connection_interval_us=service.connection_interval_us();
                     // Negotiated interval is authoritative. Completion may mean Windows queueing.
                     // If the API is unavailable, use at least the BLE minimum plus observed completion,
@@ -173,12 +171,14 @@ impl ControlManager {
                     if ready {
                         let now=now_ns();let stale_age=cadence_us.clamp(8_000,50_000)*1000;
                         if let Some(packet)=input.take(now,now>=next_movement,stale_age){
-                            let timing=packet.timing();input.metrics.queue.record(now.saturating_sub(timing.queued));
+                            if !input.captured.load(Ordering::Acquire) && !packet.is_neutral(){continue;}
+                            let timing=packet.timing();if timing.received!=0{input.metrics.queue.record(now.saturating_sub(timing.queued));}
                             let started=now_ns();
                             let result=match packet{
                                 Packet::Button{previous,buttons,dx,dy,wheel,..}=>{
                                     let movement=if dx!=0||dy!=0 {service.mouse_cached(previous,dx,dy,0,||input.metrics.submitted(timing.received,now_ns(),false,false))}else{Ok(())};
                                     // Never suppress UP because a movement send failed ambiguously.
+                                    let buttons=if input.captured.load(Ordering::Acquire){buttons}else{0};
                                     let transition=service.mouse_cached(buttons,0,0,wheel,||{let at=now_ns();input.metrics.submitted(timing.button,at,true,false);if timing.wheel!=0{input.metrics.wheel.record(at.saturating_sub(timing.wheel));}});
                                     movement.and(transition)
                                 },
@@ -191,7 +191,7 @@ impl ControlManager {
                             };
                             let completed=now_ns();let elapsed=(completed-started)/1000;completion_ema_us=if completion_ema_us==0{elapsed}else{(completion_ema_us*7+elapsed)/8};
                             if matches!(packet,Packet::Mouse{..}|Packet::Button{..}){next_movement=completed+cadence_us*1000;}
-                            match result{Ok(())=>{if matches!(packet,Packet::Mouse{..}|Packet::Button{..}){input.metrics.complete.record(completed.saturating_sub(timing.received));}},Err(error)=>{input.metrics.failed.fetch_add(1,Ordering::Relaxed);snapshot.ble_error=Some(error.to_string());input.ready.store(false,Ordering::Release);input.release();diagnostics_at=Instant::now();}}
+                            match result{Ok(())=>{if timing.received!=0 && matches!(packet,Packet::Mouse{..}|Packet::Button{..}){input.metrics.complete.record(completed.saturating_sub(timing.received));}},Err(error)=>{input.metrics.failed.fetch_add(1,Ordering::Relaxed);snapshot.ble_error=Some(error.to_string());service.invalidate();diagnostics_at=Instant::now();}}
                             continue;
                         }
                     }
@@ -199,6 +199,8 @@ impl ControlManager {
                 if save_at.is_some_and(|at|Instant::now()>=at){save_at=None;if writable{snapshot.pointer_settings_notice=crate::pointer_settings::save(input.sensitivity.load(Ordering::Relaxed)).err().map(|e|e.to_string());}}
                 if Instant::now()>=publish_at{
                     publish_at=Instant::now()+Duration::from_secs(1);snapshot.performance=input.metrics.snapshot();snapshot.pointer_speed_percent=input.sensitivity.load(Ordering::Relaxed);snapshot.pacing_interval_us=cadence_us;snapshot.captured=input.captured.load(Ordering::Acquire);
+                    snapshot.ready=input.ready.load(Ordering::Acquire);snapshot.transition_queue_depth=input.transition_depth();
+                    snapshot.diagnostics_error=diagnostic_state.error.lock().unwrap_or_else(|e|e.into_inner()).clone();
                     if outgoing.is_full(){let _=replace.try_recv();}let _=outgoing.try_send(snapshot.clone());let _=log_tx.try_send(snapshot.clone());
                 }
                 let mut wait=publish_at.saturating_duration_since(Instant::now()).min(Duration::from_millis(100));
@@ -220,6 +222,7 @@ impl ControlManager {
             stop,
             thread: Some(thread),
             log_thread: Some(log_thread),
+            diagnostics,
         })
     }
     fn enqueue(&self, command: Command) -> bool {
@@ -240,7 +243,7 @@ impl ControlManager {
         self.enqueue(Command::Disable)
     }
     pub fn is_ready(&self) -> bool {
-        self.backend() == Backend::Wda || self.mailbox.ready.load(Ordering::Acquire)
+        self.mailbox.ready.load(Ordering::Acquire)
     }
     pub fn backend(&self) -> Backend {
         match self.backend.load(Ordering::Acquire) {
@@ -251,7 +254,7 @@ impl ControlManager {
     }
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
-            home: self.backend() == Backend::Wda,
+            home: self.backend() == Backend::Wda && self.is_ready(),
             mouse: self.raw.is_some(),
             keyboard: self.raw.is_some() || self.backend() == Backend::Wda,
         }

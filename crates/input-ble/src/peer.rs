@@ -18,6 +18,8 @@ pub(crate) struct Peer {
     session_token: i64,
     device: Option<BluetoothLEDevice>,
     interval_token: Option<i64>,
+    epoch: Arc<super::subscription::Epoch>,
+    generation: u64,
 }
 impl Peer {
     pub fn new(
@@ -25,6 +27,8 @@ impl Peer {
         keyboard: Option<GattSubscribedClient>,
         id: &str,
         wake: Arc<dyn Fn() + Send + Sync>,
+        epoch: Arc<super::subscription::Epoch>,
+        generation: u64,
     ) -> Result<Self, BluetoothError> {
         let session = mouse.Session()?;
         let active = Arc::new(AtomicBool::new(
@@ -32,15 +36,16 @@ impl Peer {
         ));
         let observed = active.clone();
         let changed = wake.clone();
+        let changed_epoch = epoch.clone();
         let token = session.SessionStatusChanged(&TypedEventHandler::<
             GattSession,
             GattSessionStatusChangedEventArgs,
         >::new(move |_, args| {
             if let Some(args) = args.as_ref() {
-                observed.store(
-                    args.Status()? == GattSessionStatus::Active,
-                    Ordering::Release,
-                );
+                let _ = args.Status()?;
+                // A session becoming Active again must not resurrect an old CCCD/client.
+                observed.store(false, Ordering::Release);
+                changed_epoch.invalidate();
                 changed();
             }
             Ok(())
@@ -83,11 +88,20 @@ impl Peer {
             session_token: token,
             device,
             interval_token,
+            epoch,
+            generation,
         })
     }
     pub fn interval_us(&self) -> Option<u64> {
         let us = self.interval_us.load(Ordering::Acquire);
         (us > 0).then_some(us)
+    }
+    pub fn valid(&self) -> bool {
+        self.active.load(Ordering::Acquire) && self.epoch.matches(self.generation)
+    }
+    pub fn invalidate(&self) {
+        self.active.store(false, Ordering::Release);
+        self.epoch.invalidate();
     }
 }
 impl Drop for Peer {

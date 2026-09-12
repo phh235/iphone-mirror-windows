@@ -3,6 +3,7 @@ mod benchmark;
 mod benchmark_preview;
 mod ble_panel;
 mod control;
+mod diagnostics;
 mod low_latency;
 mod pointer_settings;
 mod raw_input;

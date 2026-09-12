@@ -153,6 +153,20 @@ impl RawInput {
     pub fn hotkey_ready(&self) -> bool {
         self.shared.hotkey.load(Ordering::Acquire)
     }
+    pub fn invalidation_handler(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let shared = self.shared.clone();
+        Arc::new(move || {
+            shared.mailbox.invalidate();
+            let window = HWND(shared.hwnd.load(Ordering::Acquire) as *mut c_void);
+            if !window.0.is_null() {
+                // SAFETY: Scalar release message to this receiver's owned window;
+                // the callback never waits for BLE or the UI thread.
+                unsafe {
+                    let _ = PostMessageW(Some(window), RELEASE, WPARAM(0), LPARAM(0));
+                }
+            }
+        })
+    }
     pub fn capture(&self, owner: HWND, bounds: RECT) {
         *self
             .shared
@@ -286,7 +300,8 @@ impl Context {
             return;
         }
         // SAFETY: Foreground getter has no borrowed memory and the owner handle is only compared.
-        if !self.shared.mailbox.ready.load(Ordering::Acquire)
+        if !self.shared.mailbox.captured.load(Ordering::Acquire)
+            || !self.shared.mailbox.ready.load(Ordering::Acquire)
             || unsafe { GetForegroundWindow().0 as usize } != self.owner
         {
             self.release(window);
@@ -414,6 +429,9 @@ impl Context {
                 }
             }
             self.shared.mailbox.key(self.modifiers, self.keys, received);
+        }
+        if !self.shared.mailbox.captured.load(Ordering::Acquire) {
+            self.release(window);
         }
     }
 }
