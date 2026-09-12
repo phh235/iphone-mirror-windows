@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # Compact native UI and Fluent SVG validation (2026-09-12)
 
 Scope: native application chrome and Settings only. No changes to the media
@@ -17,7 +19,7 @@ algorithm, or ControlManager. The 198 frozen media hashes match their baseline.
   Connection and capture state update the tooltip without recreating controls.
 - Official Microsoft Fluent System Icons Regular SVGs replace the hand-drawn
   GDI icon primitives. Eight required assets total 10,963 bytes. See
-  [source pin and MIT attribution](../assets/fluent/README.md).
+  [source pin and MIT attribution](../../assets/fluent/README.md).
 - Windows `ID2D1DeviceContext5::CreateSvgDocument` parses embedded SVG bytes once.
   `ID2D1SvgPathData::CreatePathGeometry` retains eight device-independent paths
   (361 segments); a cached software `ID2D1DCRenderTarget` and solid brush draw

@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # Performance and UI routing audit — before implementation
 
 Baseline source: `52f8f1d`, tested-folder EXE version 0.1.0 (r2).

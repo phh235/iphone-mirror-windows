@@ -547,3 +547,44 @@ PATH after target and the private development toolchain were removed. No phone
 input or mirroring was started by this check. A second cleanup Preview reports
 zero remaining cleanup targets. No Rust/media implementation was edited or
 rebuilt during this maintenance operation.
+
+## 2026-09-12 — Source cleanup, usage documentation and native UI follow-up
+
+Removed the unused legacy ui.rs and moved the active production UI into that
+canonical module without changing its implementation during the initial cleanup.
+All eleven workspace crates have consumers; the decoder adapter is used by the
+wireless path. Retained native components and runtime dependencies were not
+removed merely because some optional paths are disabled. Historical audits and
+the original requirements moved to docs/history with explicit snapshot labels.
+
+Rewrote the Vietnamese and English usage guides around the actual compact UI,
+removed stale audio/old-button/default-sensitivity instructions, and added build,
+contribution, security-reporting and licensing guidance. Added a reproducible
+source license index covering 105 external Cargo packages and pinned native/assets
+notices. A local-link/UTF-8 checker validates first-party docs. CI definition now
+checks format/docs, Clippy, tests, Windows release build and the license index;
+this does not publish an installer or establish clean-machine validation.
+
+The user then requested selectable Vietnamese/English UI and phone-proportional
+normal windows. Added a small compiled UI catalog and persisted Language setting
+under General. Native Window/Settings text changes immediately; technical
+diagnostic keys/data and original driver errors are kept intact. Added window
+geometry calculations using source ratio, measured text, monitor work area,
+toolbar reflow, AdjustWindowRectExForDpi and WM_SIZING. Normal Fit uses about 88%
+of work-area height with safe margins. Fullscreen/maximized and explicit 1:1/Fill
+semantics remain separate. No video or BLE/Raw Input backend was modified.
+
+Formatting, strict Clippy, 55 Rust tests and release build passed. The user tested
+the exact new EXE (SHA-256 4b81337c06222cfca856d07198bcfa9e8096dd7f2a62f1a233061317e82602f2)
+on the real iPhone: portrait has no unnecessary side bars; Rotate landscape fits;
+fullscreen exit restores Fit; language switches immediately; manual resize stays
+proportional; Disconnect/Connect refits. Actual viewport changed from 908x1228 to
+564x1222 for the unchanged 1180x2556 hardware-decoded source at 144 DPI. Calculated
+side padding changed from 170.5415 px per side to zero. These are actual HWND
+measurements plus user confirmation, not a GPU pixel scan or FPS benchmark.
+Physical multi-monitor/DPI and separate phone-orientation-change coverage remain
+unconfirmed. See WINDOW_LAYOUT_VALIDATION.md for details and limits.
+
+Validation was built in temporary work/source-cleanup-build to avoid leaving a
+large target tree after maintenance. The prior runnable app remained intact
+during development; raw evidence stays local and ignored by Git.

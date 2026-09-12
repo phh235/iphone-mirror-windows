@@ -3,15 +3,5 @@
     "name": "actions/checkout",
     "tag": "v7.0.1",
     "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1"
-  },
-  {
-    "name": "actions/setup-python",
-    "tag": "v7.0.0",
-    "sha": "5fda3b95a4ea91299a34e894583c3862153e4b97"
-  },
-  {
-    "name": "actions/upload-artifact",
-    "tag": "v7.0.1",
-    "sha": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
   }
 ]

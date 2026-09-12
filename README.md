@@ -1,134 +1,101 @@
+<img src="assets/logo.png" width="96" alt="iMirror logo">
+
 # iMirror
 
-A native Windows application for iPhone mirroring. The Rust application uses a
-pinned C++ QuickTime/Media Foundation/D3D11 engine for USB video and a
-managed UxPlay receiver for AirPlay. BLE HID and optional WebDriverAgent provide
-separate control paths.
+Mirror and control an iPhone from Windows with a lightweight native desktop app.
+Built with Rust, windows-rs and Win32, with Media Foundation decoding and D3D11
+video rendering. No Electron, WebView, Node.js or Python runtime in the app.
 
-**Engineering preview:** input, sustained performance, and clean-machine
-installation have not passed their release gates. See [validation](docs/VALIDATION.md).
-Real USB video has been received and rendered on an iPhone15,4 running iOS 27.0.
-The user confirmed smooth picture and correct orientation. Broader validation is pending.
+[Hướng dẫn tiếng Việt](HUONG_DAN.md) · [User guide](docs/USER_GUIDE.md) ·
+[Build from source](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md)
 
-## Install and launch
+## Current status
 
-The current local portable build is `dist/portable/iMirror.exe`. Keep the entire
-portable folder, including its USB DLLs, helper, licenses and `AirPlay` directory.
-Generated installers and source archives can be recreated by the release script;
-obsolete packages were removed during cleanup. For installer releases, use the
-MSI or Setup EXE from that release.
-Installation is per user under `%LOCALAPPDATA%\Programs\iMirror`.
-The installed application needs no Rust, Visual Studio, Python, Node.js, CMake
-or FFmpeg command-line tools. These binaries are currently unsigned.
+**Engineering preview, not yet a validated public installer release.** USB video
+and Bluetooth relative pointer control have worked on a real iPhone. Wireless,
+broader hardware compatibility, sustained stability and clean-machine installation
+still require validation. See [test evidence and release gates](docs/VALIDATION.md).
 
-The MSI creates a Start Menu shortcut. Its feature selection offers an optional
-Desktop shortcut. Uninstall through Windows Installed Apps or the Start Menu
-entry.
+| Area | Current implementation |
+| --- | --- |
+| USB mirroring | QuickTime-compatible encoded video, native hardware/software decoder selection |
+| Control | Bluetooth relative mouse and keyboard with iPhone AssistiveTouch |
+| Windows UI | Compact native toolbar, system theme, DPI-aware controls and Fluent SVG icons |
+| Language | English / Tiếng Việt in Settings → General; saved and applied immediately |
+| Wireless | Optional managed AirPlay receiver; real-device validation pending |
+| Advanced control | Optional WebDriverAgent; signed phone-side runner required |
+| Audio | Disabled; this app focuses on mirroring and control |
 
-Silent install: `msiexec /i iMirror-0.1.0-x64.msi /qn /norestart`.
-Silent uninstall: `msiexec /x iMirror-0.1.0-x64.msi /qn /norestart`.
-The Setup EXE supports `/quiet /norestart` and `/uninstall /quiet /norestart`.
+Targets: Windows 11 x64 and Windows 10 22H2 x64 where APIs/drivers permit; iOS 17+
+is the compatibility goal, not a guarantee. Actual FPS, resolution and latency
+depend on the phone, protocol and PC. USB and Bluetooth control are separate
+connections; USB mirroring does not require Bluetooth control or WDA.
 
-## Connect
+In normal Fit mode, the window follows the connected video's aspect ratio and
+stays proportional when resized. Fullscreen preserves the image and may correctly
+show black bars. Explicit 1:1 and Fill selections are retained.
 
-USB: install Apple's supported device software, connect and unlock the iPhone,
-and tap **Trust This Computer**. Select the device and Connect.
-The QuickTime backend needs a compatible Apple/USB driver stack. Some setups
-require a device-specific capture filter; this host has captured real video
-without this continuation installing a driver. iMirror does not silently install one.
-Do not replace the Apple USB parent driver with WinUSB. Driver compatibility varies across machines.
+## Start using iMirror
 
-AirPlay: put Windows and the iPhone on the same local network, click AirPlay,
-then select iMirror in the iPhone's Control Center > Screen Mirroring.
-The receiver runs only after that explicit action. If Windows asks about network
-access, allow the intended private network yourself. No blanket firewall rule is
-installed. Built-in mDNS discovery avoids requiring the Bonjour service.
+The intended public download is a single Setup EXE. Use an installer only when
+its [release notes](https://github.com/phh235/iphone-mirror-windows/releases)
+identify that exact package and its validation status. Current source and local
+engineering builds must not be presented as a clean-machine-tested release.
 
-BLE mouse: click **BLE mouse**, pair the advertised computer in iPhone Bluetooth
-settings, enable AssistiveTouch if needed, and select the subscribed phone.
-The Windows adapter must support BLE peripheral mode. Pairing, HID subscription
-and relative pointer motion were confirmed on the tested iPhone; broader device
-compatibility and sustained reliability remain unvalidated.
+For a supplied engineering app folder, keep **all** files beside `iMirror.exe`,
+including the USB helpers, DLLs, licenses and `AirPlay` directory. Do not copy the
+EXE alone. A fresh Git checkout contains source, not a prebuilt application.
 
-Mouse speed is adjustable in the **BLE control** window (5-200%, default 25%).
-Changes apply immediately and are saved automatically. 100% restores the previous
-unscaled motion. This affects physical mouse movement; diagnostic button steps
-remain fixed. iOS tracking acceleration can still differ from Windows.
+1. Connect the unlocked iPhone by USB and accept **Trust This Computer**.
+2. Open iMirror. **Automatic** tries a detected USB phone; otherwise use the
+   **Connect** icon. Choose a device in **Settings → Connection** if necessary.
+3. For mouse control, enable **Control**, enable iPhone **AssistiveTouch**, and
+   pair the PC when iMirror says Bluetooth control is ready for pairing.
+4. Click inside the mirrored image to capture input. **Ctrl+Alt+Q** releases it
+   immediately; **Esc** also releases captured input.
 
-Audio is disabled: no Mute control, USB PCM playback worker, or AirPlay audio
-receiver pipeline. USB protocol liveness handling is retained.
+Detailed setup, icon meanings, sensitivity, wireless and troubleshooting:
+[English](docs/USER_GUIDE.md) / [Tiếng Việt](HUONG_DAN.md).
 
-WDA control: supply a properly signed, installed WebDriverAgent runner and a local
-tunnel/port forward at `http://127.0.0.1:8100`, then click WDA control.
-Apple signing and Developer Mode requirements apply. iMirror cannot generate
-signing credentials. WDA is optional for mirroring.
+## Development
 
-Click the video to capture input; Escape releases it.
-Ctrl+Shift+F toggles fullscreen while the video is focused.
-Source FPS counts received source timestamps. Decode time is local processing
-time, not end-to-end latency. No 60 FPS, resolution or latency guarantee is made.
-
-## Build
-
-On Windows x64, install Rust MSVC, Visual Studio 2022 C++ Build Tools with a
-Windows SDK, CMake and Python 3.11+ (build tools only). Then run:
+Rust MSVC and the Visual Studio C++ Build Tools/Windows SDK are needed to build
+the native app. Additional tools are needed only for packaging the wireless
+runtime and installers. End users do not need these tools.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+cargo build --release
 ```
 
-The build downloads hash-pinned MSYS packages (about 420 MiB with the base),
-rebuilds UxPlay and minimal AAC/ALAC libraries, runs Rust and C++ checks, and
-creates an MSI, Setup EXE and portable ZIP. Downloaded build dependencies stay
-under `work`; they are not installed into the system toolchain.
+[Build instructions](docs/BUILDING.md) explain prerequisites, output files,
+packaging, tests and cleanup. [Architecture](docs/ARCHITECTURE.md) describes the
+module boundaries. Historical experiments are indexed under
+[docs/history](docs/history/README.md); they are not current setup instructions.
 
-For an incremental package using an already built AirPlay runtime:
-`powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -SkipAirPlayBuild`.
-`-SkipChecks` is for local packaging iteration and does not satisfy release checks.
-
-## License and source
-
-GPL-3.0-only. Upstream copyright and license notices are bundled in `licenses`.
-See the generated `THIRD_PARTY_LICENSES.md`, native source lock files, and
-`vendor/iphone-mirror/PATCHES.md`. LGPL runtime libraries remain replaceable.
-The source ZIP contains the native source archives, Cargo dependencies and build recipes.
-
-## Settings and benchmarking
-
-Settings stores the receiver name, quality profile, VSync and reconnect preference
-per user. Apply restarts an active AirPlay receiver when its name or source profile
-changes. USB quality limits affect local rendering. Fit/1:1 and Rotate also update
-input coordinate mapping.
-
-A bounded real-device benchmark is available:
-`iMirror.exe --benchmark usb --render --seconds 1800 --output usb-test.json`.
-Use `airplay` instead of `usb` for the wireless receiver. The full sample stream
-goes to an adjacent .samples.jsonl; .progress.json updates during the run.
-Keep the phone awake for a continuous test. Closing the diagnostic window
-cancels the benchmark and saves a failed/cancelled result. No test reports
-physical display or end-to-end latency merely because Present accepted frames.
-
-
-## Repository size and cleanup
-
-Only source, pinned native components, licenses, manifests and build recipes
-belong in Git. `target/`, `work/`, `dist/`, `research/` and generated benchmark
-reports are ignored. Raw hardware evidence is kept locally, not pushed.
-
-Build caches can occupy several GiB because they contain Rust debug metadata,
-Windows bindings, MSYS tools and downloaded corresponding-source archives.
-Keep the latest staged build under `dist/` and preview cleanup with:
+To keep the checkout small after building, use PowerShell 7:
 
 ```powershell
 pwsh -File scripts/clean.ps1 -Preview
 pwsh -File scripts/clean.ps1
 ```
 
-This requires PowerShell 7, validates cleanup targets, refuses in-use paths and
-preserves source, `.git`, rollback refs, research and small validation records.
-It selects the newest staged EXE with a matching `BUILD_MANIFEST.json`; use
-`-KeepRelease dist/ui-logo-20260912` to choose a specific build. Before removing
-bulky screenshots and old test binaries, it creates a local evidence ZIP and
-verifies every archived file with SHA-256. Older `dist` copies are removed.
-The next build regenerates Cargo outputs
-and downloads the hash-pinned native toolchain/source archives as needed.
+Cleanup preserves the newest staged app, source, Git history and rollback refs.
+It archives and verifies bulky test evidence before removing it. Build caches,
+local diagnostics and packaged binaries are ignored by Git and regenerate when
+needed. See [cleanup details](docs/BUILDING.md#cleanup).
+
+## License and attribution
+
+iMirror is licensed under [GPL-3.0-only](LICENSE). The native media components,
+Bluetooth HID reference, Fluent icons and other dependencies retain their own
+licenses and notices. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and
+[distribution requirements](docs/LICENSING.md). A process boundary does not by
+itself remove GPL obligations.
+
+iMirror is an independent project, not affiliated with, endorsed by, or sponsored
+by Apple Inc. or Microsoft Corporation. Product names and trademarks, including
+iPhone, iOS, AirPlay and Windows, belong to their respective owners.
+No Apple proprietary binaries or signing credentials are distributed here.

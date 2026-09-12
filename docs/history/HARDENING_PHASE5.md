@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # Product hardening — hardware acceptance gate
 
 Checkpoint: `checkpoint/native-ui-ble-working` at `7549f09` on

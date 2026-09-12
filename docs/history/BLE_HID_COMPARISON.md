@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # HID enumeration comparison and validation
 
 Reference: abhishek-raj/windows-ble-hid at

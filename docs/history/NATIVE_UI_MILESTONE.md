@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # Native UI and relative mouse milestone
 
 Rollback: commit `78f713c`, tag `rollback/pre-native-ui-raw-input-20260911`.

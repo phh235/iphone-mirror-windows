@@ -61,8 +61,9 @@ profiles; a request does not guarantee the source's rate.
 
 BLE HID uses WinRT and the MIT windows-ble-hid report design, with peripheral
 capability checks, encrypted reports, explicit client selection and input
-release on failure. Physical pairing/AssistiveTouch setup and real input still
-need validation. BLE is relative pointer control; WDA is the precision path.
+release on failure. Pairing and responsive relative pointer behavior have been
+confirmed on the tested iPhone; exact-release reconnect/keyboard/long-run coverage
+remains incomplete. BLE is relative pointer control; WDA is an optional precision path.
 
 WDA uses a native Rust HTTP client restricted to loopback, bounded requests and
 session recovery. A signed, installed runner and working local tunnel are
@@ -87,5 +88,32 @@ does not replace clean-VM, input, latency, reconnect or sustained-device gates.
 
 ## Local cleanup
 
-Generated build/tool/source caches are disposable and ignored by Git. The runnable
-portable folder and local validation evidence are retained by scripts/clean.ps1.
+Generated build/tool/source caches are disposable and ignored by Git. The newest
+staged app and local validation evidence are retained by scripts/clean.ps1.
+
+## Source map
+
+The app entry point declares one `ui` module at `crates/app/src/ui.rs`. There is
+no second inactive UI implementation. UI styling, SVG/window icons, native input
+observations, Settings and diagnostic panels remain separate modules.
+`i18n.rs` contains the small English/Vietnamese UI catalog; `window_layout.rs`
+calculates aspect-matched window geometry. Both stay outside the media/input
+backends. Language changes persist through Config without changing video options.
+
+| Crate | Responsibility |
+| --- | --- |
+| app | Native UI, ControlManager, Raw Input, settings, diagnostics and orchestration |
+| platform-windows | Windows/adapter capability helpers and COM lifetime |
+| native-core | Versioned Rust FFI to the pinned C++ USB/decode/render engine |
+| device | Configuration validation and reconnect state model |
+| video-core | Bounded encoded-video parsing/reassembly interfaces |
+| video-airplay | Private UxPlay process lifecycle and loopback encoded transport |
+| decoder | MediaFoundationSink connecting encoded frames to the native session |
+| coordinate-map | Viewport and rotation transforms used by supported controllers |
+| input-core | Input events, bounded coalescing/transitions and metrics |
+| input-ble | WinRT HID service, subscription state and report notifications |
+| input-wda | Optional loopback-only WebDriverAgent HTTP client |
+
+All workspace crates have consumers; the decoder crate is used by video-airplay,
+not an unused replacement for the native decoder. Upstream files remain pinned
+and intact even when a particular platform feature is disabled in iMirror.

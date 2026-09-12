@@ -1,3 +1,5 @@
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
 # Upstream audit — 2026-09-11
 
 Exact source revisions and dates are in upstream-lock.json. Repositories were

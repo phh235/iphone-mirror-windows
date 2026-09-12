@@ -19,7 +19,7 @@ def main():
         subprocess.run(["cargo","vendor","--locked","--versioned-dirs",str(cargo)],cwd=ROOT,stdout=config,check=True)
     output=ROOT/"dist/iMirror-0.1.0-source.zip"
     output.parent.mkdir(parents=True,exist_ok=True)
-    roots=["Cargo.toml","Cargo.lock","LICENSE","README.md","HUONG_DAN.md",".github",".gitignore","crates","scripts","installer","docs","vendor","assets"]
+    roots=["Cargo.toml","Cargo.lock","LICENSE","THIRD_PARTY_LICENSES.md","README.md","HUONG_DAN.md","CONTRIBUTING.md","SECURITY.md",".github",".gitattributes",".gitignore","crates","scripts","installer","docs","vendor","assets"]
     with zipfile.ZipFile(output,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6,strict_timestamps=False) as z:
         for name in roots:
             path=ROOT/name

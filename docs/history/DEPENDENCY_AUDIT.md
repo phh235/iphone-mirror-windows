@@ -1,4 +1,6 @@
-﻿# Cargo dependency audit
+> Historical snapshot; see [current validation](../VALIDATION.md) and the [history index](README.md). This record is not current setup guidance.
+
+# Cargo dependency audit
 
 Generated from locked Windows x64 metadata before implementation changes. No crates removed in this audit. Runtime means linked/reachable from the app, not that an optional backend is eagerly started. Resolved features and dependency edges are retained in the local baseline metadata.
 

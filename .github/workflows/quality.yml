@@ -1,0 +1,53 @@
+name: Source quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.96.0
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-and-docs:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install checked Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt
+      - run: cargo +1.96.0 fmt --check
+      - name: Check documentation links
+        shell: pwsh
+        run: ./scripts/check-docs.ps1
+
+  windows-checks:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install checked Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy
+      - name: Clippy
+        run: cargo +1.96.0 clippy --all-targets --all-features --locked -- -D warnings
+      - name: Unit tests
+        run: cargo +1.96.0 test --locked
+      - name: Windows release build
+        run: cargo +1.96.0 build --release --locked
+      - name: Verify license index
+        shell: pwsh
+        run: ./scripts/update-license-index.ps1 -Check
