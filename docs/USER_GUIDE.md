@@ -168,6 +168,13 @@ USB mirroring interrupted the WDA USB tunnel on the tested host. WDA's runner
 and tunnel currently need separate setup and supervision; they are not
 automatically deployed or renewed by iMirror.
 
+WDA is a precision automation path, not an instant mouse transport. The tested
+geometry-cache build felt slightly faster, but observed software tap dispatch
+still took about 0.6 seconds at the median. See [measured limits](WDA_PERFORMANCE_VALIDATION.md).
+If the runner or local forwarder stops, restore it, then use **Settings →
+Advanced → Connect WDA** without disconnecting Wireless video. The current build
+prevents two normal instances from competing for WDA and the release shortcut.
+
 ## Uninstall or reset
 
 Uninstall an installed package through **Windows Settings → Apps → Installed

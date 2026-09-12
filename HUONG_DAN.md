@@ -151,6 +151,11 @@ Nếu dùng WDA nâng cao, tổ hợp đã thử là **video Wireless + USB cho 
 Một click trên hình live đã tác động đúng lên iPhone; kéo và gõ bằng WDA chưa
 được kiểm chứng. USB QuickTime làm ngắt tunnel WDA trên máy đã thử, nên không
 dùng đồng thời hai đường USB đó. Runner/tunnel WDA hiện vẫn cần thiết lập riêng.
+WDA đã bớt một truy vấn thừa trước mỗi tap, nhưng thời gian xử lý phía phần mềm
+vẫn có trung vị khoảng 0,6 giây trong các lượt đo, nên không nhanh tức thì như
+chuột Bluetooth. Nếu runner hoặc forwarder ngắt, cần khôi phục chúng rồi chọn
+**Settings → Advanced → Connect WDA**; không cần ngắt video Wireless.
+Xem [kết quả và giới hạn đã đo](docs/WDA_PERFORMANCE_VALIDATION.md).
 
 ## 8. Xử lý lỗi
 

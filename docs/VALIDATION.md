@@ -14,9 +14,10 @@ clean-Windows public-release gate.
 | Keyboard | Real implementation and software tests | Separate physical typing/layout coverage is incomplete |
 | Native UI | Dark/light screenshots, app-owned five-DPI layout checks, small-window checks; supplied logo shown in main/Settings | Actual monitor changes, high contrast and 100-click physical stress remain pending |
 | Phone-shaped window and language | User confirmed portrait without side bars, Rotate landscape, fullscreen restore, language switching, proportional manual resize and reconnect refitting | [Exact geometry and build hash](WINDOW_LAYOUT_VALIDATION.md); real multi-monitor changes remain pending |
-| Wireless video | User confirmed continuous 498x1080 video after RTP timestamp and encoded-queue corrections | [Exact build and failure history](WIRELESS_BLACK_SCREEN_DIAGNOSIS.md); not a 60 FPS or long-run acceptance test |
-| Advanced WDA | User confirmed Calculator 0 to 1 from a Windows click on the live Wireless image, USB used for WDA | One tap; drag, typing, runner renewal and unattended recovery remain untested |
-| Software checks | Current Wireless candidate passed fmt, strict Clippy, 56 Rust tests, six native CTest groups and release build | Hardware acceptance remains separate |
+| Wireless video | User confirmed continuous 498x1080, then sharper/smooth 664x1440 using the existing Quality preset | [Exact build and results](WDA_PERFORMANCE_VALIDATION.md); not a 60 FPS or long-run acceptance test |
+| Advanced WDA | User confirmed repeated clicks and a slight subjective improvement after geometry caching; input recovered after helper restart | Approximately 0.6 s median software dispatch in observed windows; drag, typing and unattended recovery remain untested |
+| Duplicate launch | A second normal launch exited 0 and retained one live iMirror instance | Only the current guarded EXE enforces this; older preview binaries do not |
+| Software checks | Current candidate passed fmt, strict Clippy, 63 Rust tests and release build; unchanged native media last passed six CTest groups | Hardware acceptance remains separate |
 | Packaged-folder launch | Latest retained app launched with system-only PATH after deleting build caches | Development PC, not a clean VM |
 
 The historical 30.056-second USB run recorded 1180×2556, 56.588 source FPS,

@@ -852,3 +852,43 @@ keyboard, unattended WDA recovery, long-term stability and clean-machine release
 remain unvalidated. The native UI run continued publishing decoded frames with
 no current queue recovery error. USB/BLE/Raw Input and shared decoder/renderer
 source files remain unchanged by this Wireless fix.
+
+## 2026-09-12 — WDA query latency, duplicate launch and Wireless Quality
+
+The user later reported non-working clicks. Two iMirror processes were open; the
+second failed Ctrl+Alt+Q registration and had no ready backend, while Control
+was saved off. WDA itself still answered. Closing both and enabling the existing
+WDA preference in one new instance restored clicking, which the user confirmed.
+They then reported excessive delay. Five read-only geometry requests averaged
+165.135 ms; every old tap unnecessarily fetched geometry before sending input.
+
+Cached geometry per session, retaining explicit format/rotation refresh and
+invalidation on request failure. Invalid-session recovery revalidates geometry
+before a coordinate replay; a changed size rejects the stale point. Ambiguous
+timeouts never retry input. Added bounded WDA timing diagnostics and cleared old
+error text on successful connection. Added a per-user exclusive desktop-instance
+lock before UI/control initialization; a real duplicate launch exited without
+starting a second app. No media, BLE, Raw Input or coordinate-map source changed.
+
+Fmt, strict all-target/all-feature Clippy, 63 Rust tests and release build passed.
+Staged dist/wda-latency-20260912/iMirror.exe, SHA-256
+`31b534857f3dd54b0a80ffe57940b7cd2e76128ba05d36158a1b50e9c0b8e0fb`.
+The user confirmed functioning clicks and a slight subjective improvement.
+54 observed HTTP taps had zero failures and only two setup geometry queries;
+median software dispatch was 597.097 ms, mean 667.020 ms. This is not a paired
+end-to-end before/after benchmark or proof of instant WDA control.
+
+The user compared Wireless clarity/smoothness with prior USB + Bluetooth Mouse.
+Changed only their saved existing Quality preset with a backup; no code change.
+Actual source increased from 498x1080 to 664x1440, and the user confirmed sharper,
+smooth video. No queue recovery/decoder runtime failure appeared. Requested
+60 FPS remains unproven as sustained presentation FPS. Quality is retained for
+this setup; the application's default remains unchanged.
+
+The WDA runner exited with EOF/lost-testmanagerd during the sequence. Restarted
+the runner; phone logs showed its server running, but the old forwarder could
+not reach it. Restarting that forwarder restored /status. The user reconnected
+WDA in Advanced and confirmed input with Quality video live. Exact failure causes
+remain unknown; automatic helper lifecycle is not implemented. A later 11-tap
+window had no errors and one geometry query, median 614.651 ms dispatch. See
+WDA_PERFORMANCE_VALIDATION.md for evidence, limits and reproduction context.
