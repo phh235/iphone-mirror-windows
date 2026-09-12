@@ -26,6 +26,27 @@ pub enum Quality {
     Balanced,
     LowLatency,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConnectionChoice {
+    #[default]
+    Automatic,
+    Usb,
+    Wireless,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ControlChoice {
+    #[default]
+    Automatic,
+    BluetoothMouse,
+    Wda,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DisplayChoice {
+    #[default]
+    Fit,
+    OneToOne,
+    Fill,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -35,27 +56,47 @@ pub struct Config {
     pub vsync: bool,
     pub reconnect: bool,
     pub one_to_one: bool,
+    pub connection: ConnectionChoice,
+    pub control: ControlChoice,
+    pub control_enabled: bool,
+    pub advanced: bool,
+    pub display: DisplayChoice,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             receiver_name: "iMirror".into(),
             quality: Quality::Auto,
             vsync: true,
             reconnect: true,
             one_to_one: false,
+            connection: ConnectionChoice::Automatic,
+            control: ControlChoice::Automatic,
+            control_enabled: false,
+            advanced: false,
+            display: DisplayChoice::Fit,
         }
     }
 }
 impl Config {
     pub fn parse(bytes: &[u8]) -> Result<Self, ConfigError> {
         let mut config: Self = serde_json::from_slice(bytes)?;
-        if config.version > 2 {
+        if config.version > 3 {
             return Err(ConfigError::FutureVersion);
         }
-        // v1 lacked vsync/reconnect. Serde defaults preserve safe v2 behavior.
-        config.version = 2;
+        if config.version < 3 {
+            config.display = if config.one_to_one {
+                DisplayChoice::OneToOne
+            } else {
+                DisplayChoice::Fit
+            };
+        }
+        config.one_to_one = config.display == DisplayChoice::OneToOne;
+        if !config.advanced && config.control == ControlChoice::Wda {
+            config.control = ControlChoice::Automatic;
+        }
+        config.version = 3;
         if config.receiver_name.is_empty()
             || config.receiver_name.chars().count() > 63
             || config.receiver_name.chars().any(char::is_control)
@@ -141,7 +182,12 @@ mod tests {
     #[test]
     fn config_migrates_old_and_rejects_future() -> Result<(), ConfigError> {
         let config = Config::parse(br#"{"version":1,"receiver_name":"Office"}"#)?;
-        assert_eq!(config.version, 2);
+        assert_eq!(config.version, 3);
+        let legacy = Config::parse(br#"{"version":2,"one_to_one":true}"#)?;
+        assert_eq!(legacy.display, DisplayChoice::OneToOne);
+        assert!(legacy.one_to_one);
+        let hidden = Config::parse(br#"{"version":3,"control":"Wda","advanced":false}"#)?;
+        assert_eq!(hidden.control, ControlChoice::Automatic);
         assert!(config.vsync && config.reconnect);
         assert!(matches!(
             Config::parse(br#"{"version":20}"#),

@@ -18,7 +18,7 @@ pub fn path() -> io::Result<PathBuf> {
 }
 fn parse(bytes: &[u8]) -> io::Result<u16> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
-    if value.get("version").and_then(|v| v.as_u64()) != Some(1) {
+    if !matches!(value.get("version").and_then(|v| v.as_u64()), Some(1 | 2)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Unsupported BLE input settings version; file preserved",
@@ -50,14 +50,26 @@ pub fn load() -> io::Result<u16> {
             "BLE input settings exceed 4 KiB",
         ));
     }
-    parse(&bytes)
+    let speed = parse(&bytes)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if value.get("version").and_then(|v| v.as_u64()) == Some(1) {
+        let current = path()?;
+        let backup = current.with_extension("legacy-v1.json");
+        if !backup.exists() {
+            fs::write(backup, &bytes)?;
+        }
+        save(DEFAULT_POINTER_SPEED)?;
+        Ok(DEFAULT_POINTER_SPEED)
+    } else {
+        Ok(speed)
+    }
 }
 pub fn save(percent: u16) -> io::Result<()> {
     save_to(&path()?, percent)
 }
 fn save_to(path: &Path, percent: u16) -> io::Result<()> {
     let bytes =
-        serde_json::to_vec_pretty(&serde_json::json!({"version":1,"mouse_speed_percent":percent}))?;
+        serde_json::to_vec_pretty(&serde_json::json!({"version":2,"mouse_speed_percent":percent}))?;
     parse(&bytes)?;
     let parent = path
         .parent()
@@ -99,7 +111,7 @@ mod tests {
     #[test]
     fn speed_preferences_reject_invalid_or_future_data() {
         for bytes in [
-            br#"{"version":2,"mouse_speed_percent":25}"#.as_slice(),
+            br#"{"version":3,"mouse_speed_percent":25}"#.as_slice(),
             br#"{"version":1,"mouse_speed_percent":0}"#,
             br#"{"version":1,"mouse_speed_percent":201}"#,
             b"{}",
