@@ -142,6 +142,18 @@ struct Ui {
     window_baseline: Option<serde_json::Value>,
     layout_fixture: Option<Extent>,
     last_monitor: Option<(i32, i32, i32, i32)>,
+    closing: Option<Closing>,
+    shutdown_report: std::path::PathBuf,
+    compact_after_disconnect: bool,
+}
+struct Closing {
+    started: Instant,
+    hidden_ms: f64,
+    control_ms: Option<f64>,
+    video_ms: Option<f64>,
+    was_active: bool,
+    was_visible: bool,
+    polls: u32,
 }
 struct WindowLifetime<'a> {
     window: HWND,
@@ -151,6 +163,8 @@ impl Drop for WindowLifetime<'_> {
     fn drop(&mut self) {
         {
             let mut ui = self.state.borrow_mut();
+            ui.worker.request_stop();
+            ui.control.request_stop();
             ui.appearance = None;
             ui.control.stop();
             ui.worker.stop();
@@ -167,6 +181,116 @@ impl Drop for WindowLifetime<'_> {
     }
 }
 impl Ui {
+    fn begin_close(&mut self) {
+        if self.closing.is_some() {
+            return;
+        }
+        let started = Instant::now();
+        self.closing = Some(Closing {
+            started,
+            hidden_ms: 0.0,
+            control_ms: None,
+            video_ms: None,
+            was_active: self.video.active,
+            // SAFETY: Read-only visibility query for the UI-owned main window.
+            was_visible: unsafe { IsWindowVisible(self.window).as_bool() },
+            polls: 0,
+        });
+        self.wanted = false;
+        self.needs_autosize = false;
+        self.gesture.cancel();
+        // Signal both independent pipelines before waiting for either. Local Raw
+        // Input release never waits for Bluetooth or USB restoration.
+        self.control.request_stop();
+        self.worker.request_stop();
+        if let Some(panel) = &self.settings {
+            panel.hide();
+        }
+        if let Some(panel) = &self.diagnostics {
+            panel.hide();
+        }
+        // SAFETY: Hide the UI immediately but retain every HWND until the media
+        // worker has released its preview. The message loop continues dispatching.
+        unsafe {
+            let _ = ShowOwnedPopups(self.window, false);
+            let _ = ShowWindow(self.window, SW_HIDE);
+        }
+        if let Some(closing) = &mut self.closing {
+            closing.hidden_ms = started.elapsed().as_secs_f64() * 1000.0;
+        }
+    }
+    fn poll_close(&mut self) {
+        let Some(closing) = &mut self.closing else {
+            return;
+        };
+        let elapsed = closing.started.elapsed().as_secs_f64() * 1000.0;
+        closing.polls += 1;
+        if self.control.is_stopped() && closing.control_ms.is_none() {
+            closing.control_ms = Some(elapsed);
+        }
+        if self.worker.is_stopped() && closing.video_ms.is_none() {
+            closing.video_ms = Some(elapsed);
+        }
+        if closing.control_ms.is_none() || closing.video_ms.is_none() {
+            return;
+        }
+        let report = serde_json::json!({"app_version":env!("CARGO_PKG_VERSION"),"process_id":std::process::id(),
+            "video_was_active":closing.was_active,"window_was_visible":closing.was_visible,"completion_polls":closing.polls,"window_hidden_ms":closing.hidden_ms,
+            "control_stop_observed_ms":closing.control_ms,"video_stop_observed_ms":closing.video_ms,
+            "message_loop_quit_ms":elapsed,"note":"From WM_CLOSE handling, not a physical click timestamp. Worker completion observed on the existing UI timer; native USB restoration is not interrupted."});
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            if let Some(parent) = self.shutdown_report.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&self.shutdown_report, serde_json::to_vec_pretty(&report)?)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(%error,"Could not save shutdown timing");
+        }
+        // SAFETY: Both worker groups have completed, so normal UI destruction and
+        // the final joins can run without waiting for USB/GATT in this message loop.
+        unsafe {
+            PostQuitMessage(0);
+        }
+    }
+    fn resize_disconnected(&mut self) {
+        // Preserve a user's fullscreen/maximized state. Only the normal connection
+        // panel is compacted; no native media preference is changed.
+        if self.fullscreen.is_some() || self.closing.is_some() {
+            return;
+        }
+        // SAFETY: Read-only state of this live top-level HWND.
+        if unsafe { IsZoomed(self.window).as_bool() } {
+            return;
+        }
+        let result = (|| -> windows::core::Result<()> {
+            let work = window_layout::monitor(self.window, None)?.rcWork;
+            let size = self.chrome()?.compact(work);
+            let rect = window_layout::centered(size, work);
+            // SAFETY: Resize only the parent; the preview remains alive and owned
+            // by this UI while an asynchronous disconnect finishes.
+            unsafe {
+                SetWindowPos(
+                    self.window,
+                    None,
+                    rect.left,
+                    rect.top,
+                    size.width,
+                    size.height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )?;
+            }
+            layout(self);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            crate::diagnostics::remember(
+                &mut self.recent_errors,
+                &format!("Connection-panel sizing: {error}"),
+            );
+        }
+    }
     fn source_size(&self) -> Option<Extent> {
         let mut size = if self.video.status.width > 0 && self.video.status.height > 0 {
             Extent {
@@ -313,6 +437,7 @@ impl Ui {
                 if self.video.active {
                     self.control.release();
                     self.wanted = false;
+                    self.compact_after_disconnect = true;
                     self.command(worker::Command::Disconnect);
                 } else {
                     self.connect_device();
@@ -673,12 +798,20 @@ impl Ui {
             panel.update(&self.input);
         }
         if let Ok(video) = self.worker.snapshots.try_recv() {
+            let disconnected = self.video.active && !video.active;
             let was_live = self.video.status.state == 4;
             let format_changed = (video.status.width, video.status.height) != self.last_geometry;
             if self.video.active && !video.active {
                 self.control.release();
             }
             self.video = video;
+            if !self.video.active
+                && (self.compact_after_disconnect
+                    || (disconnected && self.video.devices.is_empty()))
+            {
+                self.compact_after_disconnect = false;
+                self.resize_disconnected();
+            }
             if !self.smoke && self.wanted && !self.video.active && !self.video.devices.is_empty() {
                 self.connect_device();
             }
@@ -876,6 +1009,17 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut config = crate::settings::load()?;
     let args: Vec<_> = std::env::args().collect();
+    let shutdown_report = args
+        .iter()
+        .position(|a| a == "--shutdown-report")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("LOCALAPPDATA")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("iMirror/shutdown.json")
+        });
     if smoke && let Some(index) = args.iter().position(|a| a == "--ui-test-language") {
         config.language = if args.get(index + 1).is_some_and(|s| s == "vi") {
             Language::Vietnamese
@@ -947,6 +1091,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         window_baseline: None,
         layout_fixture,
         last_monitor: None,
+        closing: None,
+        shutdown_report,
+        compact_after_disconnect: false,
     }));
     // SAFETY: All HWND creation/dispatch stays on this thread; state allocation is stable until worker shutdown and window destruction.
     unsafe {
@@ -994,14 +1141,14 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         )
         .is_ok();
         let initial_width = if work_known {
-            (620.0 * scale).min((work.right - work.left - 32).max(1) as f64)
+            (480.0 * scale).min((work.right - work.left - 32).max(1) as f64)
         } else {
-            620.0 * scale
+            480.0 * scale
         };
         let initial_height = if work_known {
-            (900.0 * scale).min((work.bottom - work.top - 32).max(1) as f64)
+            (280.0 * scale).min((work.bottom - work.top - 32).max(1) as f64)
         } else {
-            900.0 * scale
+            280.0 * scale
         };
         let window = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -1119,6 +1266,7 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         appearance.text_style(state.borrow().status_label, 2);
         layout(&state.borrow());
         state.borrow().refresh_labels();
+        state.borrow_mut().resize_disconnected();
         if state.borrow().layout_fixture.is_some() {
             state.borrow_mut().resize_to_phone(None);
         }
@@ -1580,6 +1728,22 @@ unsafe extern "system" fn window_proc(
         if !ptr.is_null()
             && let Ok(mut ui) = (&*ptr).try_borrow_mut()
         {
+            if ui.closing.is_some() {
+                if message == WM_TIMER {
+                    ui.poll_close();
+                    return LRESULT(0);
+                }
+                if message == WM_CLOSE
+                    || message == WM_COMMAND
+                    || message == EXECUTE_UI_COMMAND
+                    || message == settings::EVENT
+                    || (WM_APP + WM_KEYFIRST..=WM_APP + WM_MOUSELAST).contains(&message)
+                    || message == WM_APP + WM_KILLFOCUS
+                {
+                    return LRESULT(0);
+                }
+                return DefWindowProcW(window, message, wparam, lparam);
+            }
             if (WM_APP + WM_KEYFIRST..=WM_APP + WM_MOUSELAST).contains(&message)
                 || message == WM_APP + WM_KILLFOCUS
             {
@@ -1745,8 +1909,7 @@ unsafe extern "system" fn window_proc(
                     return LRESULT(0);
                 }
                 WM_CLOSE => {
-                    ui.control.release();
-                    PostQuitMessage(0);
+                    ui.begin_close();
                     return LRESULT(0);
                 }
                 _ => {}

@@ -235,6 +235,12 @@ impl BlePanel {
             let _ = SetForegroundWindow(self.window);
         }
     }
+    pub fn hide(&self) {
+        // SAFETY: This modeless diagnostic window belongs to the UI thread.
+        unsafe {
+            let _ = ShowWindow(self.window, SW_HIDE);
+        }
+    }
     pub fn update(&mut self, input: &Snapshot) {
         let language = crate::i18n::language();
         if self.language != Some(language) {

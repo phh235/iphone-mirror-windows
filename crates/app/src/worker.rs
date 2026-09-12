@@ -61,6 +61,9 @@ impl Worker {
                 let mut rotation = 0;
                 while !stopping.load(Ordering::Acquire) {
                     if let Ok(command) = incoming.recv_timeout(Duration::from_millis(100)) {
+                        if stopping.load(Ordering::Acquire) {
+                            break;
+                        }
                         match command {
                             Command::Configure(updated, hwnd) => {
                                 let restart_airplay = airplay_wanted.is_some()
@@ -134,6 +137,9 @@ impl Worker {
                                 }
                             }
                         }
+                    }
+                    if stopping.load(Ordering::Acquire) {
+                        break;
                     }
                     let mut session_lost = false;
                     if let Some(s) = &session {
@@ -297,8 +303,14 @@ impl Worker {
             thread: Some(thread),
         })
     }
-    pub fn stop(&mut self) {
+    pub fn request_stop(&self) {
         self.stop.store(true, Ordering::Release);
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+    pub fn stop(&mut self) {
+        self.request_stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

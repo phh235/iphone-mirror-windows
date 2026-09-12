@@ -120,6 +120,7 @@ impl ControlManager {
             let mut next_movement=0u64;let mut cadence_us=7_500u64;let mut completion_ema_us=0u64;
             while !stopping.load(Ordering::Acquire){
                 while let Ok(command)=incoming.try_recv(){
+                    if stopping.load(Ordering::Acquire){break;}
                     let result=(||->Result<(),String>{match command{
                         Command::BleStart=>{
                             if let Some(error)=&initial_error{return Err(error.clone());}
@@ -144,6 +145,7 @@ impl ControlManager {
                     }Ok(())})();
                     if let Err(error)=result{if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;}snapshot.message=error.clone();snapshot.ble_error=Some(error);}
                 }
+                if stopping.load(Ordering::Acquire){break;}
                 if ble_wanted && ble.is_none() && Instant::now()>=retry_at{
                     match HidPeripheral::start(&mut snapshot.ble){Ok(mut service)=>{let wake=signal.clone();service.set_waker(Arc::new(move||wake.pulse()));service.set_invalidation_handler(invalidation.clone());ble=Some(service);diagnostics_at=Instant::now();snapshot.ble_error=None;},Err(error)=>{snapshot.ble_error=Some(error.to_string());snapshot.message=error.to_string();retry_at=Instant::now()+Duration::from_secs(3);}}
                 }
@@ -208,7 +210,7 @@ impl ControlManager {
                 if waiter.wait(wait).is_err(){input.release();break;}
             }
             input.release();input.ready.store(false,Ordering::Release);
-            if let Some(ble)=&mut ble{ble.release();}
+            drop(ble.take()); // Drop sends neutral reports and stops advertising once.
             if let Some(wda)=&mut wda{let _=wda.dispatch(Input::Release);}
             if writable{let _=crate::pointer_settings::save(input.sensitivity.load(Ordering::Relaxed));}
         })?;
@@ -278,13 +280,26 @@ impl ControlManager {
             command => self.enqueue(command),
         }
     }
-    pub fn stop(&mut self) {
+    pub fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.mailbox.enabled.store(false, Ordering::Release);
+        self.mailbox.ready.store(false, Ordering::Release);
         self.release();
+        if let Some(raw) = &self.raw {
+            raw.request_stop();
+        }
+        self.mailbox.wake();
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.raw.as_ref().is_none_or(RawInput::is_stopped)
+            && self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+            && self.log_thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+    pub fn stop(&mut self) {
+        self.request_stop();
         if let Some(raw) = &mut self.raw {
             raw.stop();
         }
-        self.stop.store(true, Ordering::Release);
-        self.mailbox.wake();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

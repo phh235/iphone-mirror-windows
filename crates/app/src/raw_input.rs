@@ -192,9 +192,15 @@ impl RawInput {
             }
         }
     }
-    pub fn stop(&mut self) {
+    pub fn request_stop(&self) {
         self.release();
         self.post(STOP);
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+    pub fn stop(&mut self) {
+        self.request_stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

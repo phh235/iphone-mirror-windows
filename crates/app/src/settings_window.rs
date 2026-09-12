@@ -772,6 +772,12 @@ impl Panel {
     pub fn handle(&self) -> HWND {
         self.window
     }
+    pub fn hide(&self) {
+        // SAFETY: Hide only this owned modeless window; keep its HWND alive until teardown finishes.
+        unsafe {
+            let _ = ShowWindow(self.window, SW_HIDE);
+        }
+    }
     pub fn validate_navigation(&self) -> Result<(), String> {
         let context = self.context.borrow();
         let mut checked = 0;

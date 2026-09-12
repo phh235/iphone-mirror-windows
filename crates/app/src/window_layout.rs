@@ -31,6 +31,18 @@ pub struct Sizing {
     pub outer: Extent,
 }
 impl Chrome {
+    /// Short connection panel; no source dimensions are guessed before video exists.
+    pub fn compact(self, work: RECT) -> Extent {
+        let margin = self.px(16);
+        Extent {
+            width: (self.px(440) + self.borders.width)
+                .min(work.right - work.left - 2 * margin)
+                .max(1),
+            height: (self.px(230) + self.borders.height)
+                .min(work.bottom - work.top - 2 * margin)
+                .max(1),
+        }
+    }
     pub fn px(self, value: i32) -> i32 {
         ((i64::from(value) * i64::from(self.dpi) + 48) / 96) as i32
     }
@@ -205,6 +217,31 @@ pub fn side_padding(source: Extent, video: Extent) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disconnected_panel_is_short_and_inside_the_work_area() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let chrome = Chrome {
+                dpi,
+                borders: Extent {
+                    width: 16 * dpi as i32 / 96,
+                    height: 39 * dpi as i32 / 96,
+                },
+                name: 80,
+                status: 80,
+                home: false,
+            };
+            let work = RECT {
+                left: -1280,
+                top: 0,
+                right: 0,
+                bottom: 680,
+            };
+            let size = chrome.compact(work);
+            assert!(size.width <= work.right - work.left);
+            assert!(size.height <= chrome.px(269));
+            assert!(size.height <= work.bottom - work.top - 2 * chrome.px(16));
+        }
+    }
     #[test]
     fn portrait_landscape_and_all_resize_edges_fit_at_five_dpis()
     -> std::result::Result<(), &'static str> {
