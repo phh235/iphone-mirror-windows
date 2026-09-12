@@ -117,13 +117,18 @@ reports are ignored. Raw hardware evidence is kept locally, not pushed.
 
 Build caches can occupy several GiB because they contain Rust debug metadata,
 Windows bindings, MSYS tools and downloaded corresponding-source archives.
-After preserving the runnable build in `dist/portable`, clean them with:
+Keep the latest staged build under `dist/` and preview cleanup with:
 
 ```powershell
+pwsh -File scripts/clean.ps1 -Preview
 pwsh -File scripts/clean.ps1
 ```
 
 This requires PowerShell 7, validates cleanup targets, refuses in-use paths and
-preserves source, `.git`, the portable build and small validation records.
-Modified research clones are preserved. The next build regenerates Cargo outputs
+preserves source, `.git`, rollback refs, research and small validation records.
+It selects the newest staged EXE with a matching `BUILD_MANIFEST.json`; use
+`-KeepRelease dist/ui-logo-20260912` to choose a specific build. Before removing
+bulky screenshots and old test binaries, it creates a local evidence ZIP and
+verifies every archived file with SHA-256. Older `dist` copies are removed.
+The next build regenerates Cargo outputs
 and downloads the hash-pinned native toolchain/source archives as needed.

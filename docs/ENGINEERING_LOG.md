@@ -523,3 +523,27 @@ Settings smoke captures show the supplied logo in their title bars. Frozen media
 and input implementations are untouched. The exact logo test build is staged at
 dist/ui-logo-20260912/iMirror.exe, SHA-256
 96a847662b530c2fe799a8db57a25f8838e95a0e4e5fd76bc93464f2c5cafa51.
+
+## 2026-09-12 — Generated-output cleanup
+
+Measured about 10.57 GiB in the workspace, primarily target (6.54 GiB), the
+rebuildable MSYS/native dependency cache (3.06 GiB), uncompressed UI BMP captures
+and duplicate staged runtimes. No files in target/work/dist were tracked by Git.
+
+Updated scripts/clean.ps1 to select and hash-check the newest staged release,
+support a read-only Preview, reject unsafe/in-use/reparse targets, and retain
+source, vendor, research, Git history and rollback refs. Before deleting bulky
+test evidence it archives and individually SHA-256 verifies the original files.
+Small JSON/log/script evidence remains directly accessible. It does not repeat
+archival when no bulky evidence files need removal.
+
+Executed cleanup: removed 17 generated directories and 168 bulky files. Preserved
+836 evidence files in work/evidence-before-cleanup-20260912-151731.zip with a
+separate hash manifest. The workspace now measures approximately 83.22 MiB,
+including the complete latest app folder dist/ui-logo-20260912 (41.85 MiB).
+All 198 frozen media hashes and the retained EXE hash are unchanged. The retained
+EXE passed an app-owned startup smoke with only Windows system directories on
+PATH after target and the private development toolchain were removed. No phone
+input or mirroring was started by this check. A second cleanup Preview reports
+zero remaining cleanup targets. No Rust/media implementation was edited or
+rebuilt during this maintenance operation.
