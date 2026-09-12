@@ -40,14 +40,12 @@ impl Peer {
         let token = session.SessionStatusChanged(&TypedEventHandler::<
             GattSession,
             GattSessionStatusChangedEventArgs,
-        >::new(move |_, args| {
-            if let Some(args) = args.as_ref() {
-                let _ = args.Status()?;
-                // A session becoming Active again must not resurrect an old CCCD/client.
-                observed.store(false, Ordering::Release);
-                changed_epoch.invalidate();
-                changed();
-            }
+        >::new(move |_, _| {
+            // Invalidate even if event details are unavailable. An Active callback
+            // must never resurrect an old CCCD/client without a fresh verification.
+            observed.store(false, Ordering::Release);
+            changed_epoch.invalidate();
+            changed();
             Ok(())
         }))?;
         let interval_us = Arc::new(AtomicU64::new(0));

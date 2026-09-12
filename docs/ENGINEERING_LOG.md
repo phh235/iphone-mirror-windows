@@ -427,3 +427,47 @@ release captured/rendered for 30.056 seconds: 1180x2556, 56.5880 source FPS,
 56.4474 submitted FPS, hardware decoder; 1,611 received and 1,606 submitted frames.
 The run overlapped compilation and is labeled accordingly. Raw evidence is in
 work/native-ui-milestone/mirror-before-connected.json and companion samples.
+
+## 2026-09-12 - Product hardening, stopping at the Phase 5 hardware gate
+
+Preserved the complete audited working tree in four logical commits (afd9e07,
+758f624, 93bfeaa, 7549f09) and tag checkpoint/native-ui-ble-working. The tag's
+Git archive built successfully with cargo build --release --locked --offline in
+an isolated source and target directory; no untracked source was required.
+
+Hardening adds subscription/session generation invalidation, fresh subscriber
+verification and neutralization before readiness, immediate independent Raw
+Input release, and a 128-transition cap with all-UP safety on saturation. The
+one-slot movement accumulator and its scaling/pacing policy remain intact.
+Both diagnostic and normal HID sends now share failure invalidation. Neutral
+reports do not inflate physical input latency statistics.
+
+Settings pairing guidance requires STARTED; WDA has separate readiness and Home
+requires a ready capable backend. A first scrolling implementation passed
+geometry checks but its small-window image exposed a blank end position. Fixed
+that with a clipped native content viewport, pinned navigation/Done and focused
+control reveal. Also bounded viewport background painting for PrintWindow; an
+oversized erase rectangle had obscured pinned controls in the diagnostic image.
+Smoke validation now explicitly verifies the footer after final scrolling.
+
+Diagnostics use a dedicated file thread, create parent directories first and
+rotate a 2 MiB JSONL file with three bounded archives. Advanced Copy Diagnostics
+exports useful host/video/control state and recent errors without UDIDs,
+Bluetooth addresses, phone names, input text or pairing material. Storage errors
+are visible; obsolete automatic Move Right wording is removed.
+
+49 Rust tests cover the existing parser/config/coordinate behavior and new
+subscription epochs, queue saturation/releases, neutral-sample exclusion,
+guidance, diagnostic rotation and export privacy. Strict Clippy, formatting and
+release builds pass. Settings navigation passed at five app-controlled test DPI
+values (96/120/144/168/192) on all four pages and at two small-window sizes.
+These are software UI checks, not actual monitor-DPI or iPhone acceptance tests.
+The final test executable is staged separately; BUILD_MANIFEST.json identifies
+its exact source/binary. The first staging candidate is superseded by the r2
+folder after the viewport correction. Neither candidate was physically tested.
+
+Frozen media files match the 198-file baseline. USB/QuickTime, decoder, renderer,
+frame timing, audio and Valeria/09:41 behavior are unchanged. No Phase 6 benchmark,
+30-minute stability run, current UxPlay deployment, installer build or clean-VM
+test is run before the user's explicit acceptance of the Phase 5 executable.
+See HARDENING_PHASE5.md for acceptance scope. Hardware result remains PENDING.
