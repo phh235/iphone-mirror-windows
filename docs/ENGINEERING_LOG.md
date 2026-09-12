@@ -588,3 +588,39 @@ unconfirmed. See WINDOW_LAYOUT_VALIDATION.md for details and limits.
 Validation was built in temporary work/source-cleanup-build to avoid leaving a
 large target tree after maintenance. The prior runnable app remained intact
 during development; raw evidence stays local and ignored by Git.
+
+## 2026-09-12 — Compact startup, shutdown and USB recovery investigation
+
+The old close handler exited the message pump before joining the control and
+media workers, keeping a visible unresponsive window during native USB restore.
+The new UI requests both workers to stop, releases local capture, hides main and
+owned windows, and continues pumping until both worker groups finish. HWNDs stay
+alive for the native preview until the final joins/destruction. The native USB
+restore deadlines and protocol are unchanged. Stop checks prevent new queued
+connect/discovery/control work starting after shutdown is requested.
+
+The disconnected normal window now uses a short 440x230 effective-pixel client
+area, bounded by the current work area and adjusted for DPI/non-client borders.
+Existing source-driven Fit sizing takes over when video arrives. Explicit
+disconnect returns to the compact panel after teardown completes. Fullscreen,
+maximized and explicit display-mode behavior remains separate.
+
+Formatting, strict Clippy, 56 tests and release compilation passed. Three visible
+idle process tests hid windows in 4.24-7.11 ms and completed workers in
+167.25-386.40 ms. Those intervals begin at WM_CLOSE, not a physical mouse click.
+
+Hardware validation exposed a separate unresolved USB lifecycle issue: no PING
+and libusb0 -116 reproduced on both candidate and previously verified reference.
+All 80 compared runtime/helper files match. Restarting/unlocking/replugging the
+iPhone recovered the reference, then the candidate mirrored 1180x2556 with the
+hardware decoder and a 564x1222 viewport. The user confirmed live Fit and fast
+close. That close hid the window in 5.58 ms but native USB restore timed out and
+the process completed around 15.55 seconds later. Reopening initially found no
+phone; cable replug recovered video automatically, confirmed by the user.
+
+Do not count no-intervention reopen/reconnect as passed or call this a production
+release. No driver installation, Apple-service restart or frozen native capture
+change was made. See [validation details](STARTUP_SHUTDOWN_VALIDATION.md) for exact
+EXE identity, observations, limits and local evidence paths. Detailed failure
+history is preserved, including the initially optimistic user answer followed
+by the cannot-connect report.

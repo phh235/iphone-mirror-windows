@@ -34,6 +34,15 @@ USB mirroring and Bluetooth Mouse do not require jailbreak, an iPhone companion
 app, Apple ID sign-in or Developer Mode. Bluetooth control can stay off while
 you mirror. Audio playback is disabled in this product.
 
+Before video arrives, the normal window is a short connection panel. It expands
+to the phone's proportions when video starts and returns to the compact panel
+after an explicit disconnect finishes.
+
+During USB mirroring, the iPhone can temporarily disappear from **This PC** as
+USB switches from photo browsing to video capture. Closing the main window
+releases local control and hides the UI first; USB restoration may continue in
+the background. Let it finish before reopening the app or removing its files.
+
 ## Toolbar
 
 Change language under **Settings → General → Language**: **English** or
@@ -124,6 +133,7 @@ video. A requested frame rate is not proof of actual wireless source FPS.
 | --- | --- |
 | No USB phone | Unlock/Trust, data cable/port, Refresh and whether Apple Devices recognizes it |
 | Device listed but no video | Select it and Connect; export diagnostics before attempting driver changes |
+| No PING / libusb0 -116 | Close iMirror, let USB cleanup finish, then replug with the phone unlocked. If this persists, restarting the iPhone recovered the tested case; this is not a general compatibility guarantee |
 | Bluetooth connected, Control not ready | AssistiveTouch, Windows Bluetooth and app status; if necessary Forget/Remove the pairing on both devices, then pair from AssistiveTouch |
 | Cursor too fast/slow | App sensitivity and iPhone tracking-speed settings |
 | Screen moves while merely hovering | Release capture; check iPhone Drag Lock, Dwell and Zoom/Pan settings if enabled |

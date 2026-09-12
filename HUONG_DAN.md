@@ -46,6 +46,14 @@ riêng toolbar, thanh tiêu đề và DPI. Hình không bị kéo giãn hay cắ
 viền. Fullscreen có thể có dải đen do tỷ lệ màn hình PC khác iPhone; đó là bình
 thường. Nếu bạn chủ động chọn **1:1** hoặc **Fill / Lấp đầy**, app giữ lựa chọn ấy.
 
+Khi chưa có video, cửa sổ là bảng kết nối thấp, gọn. App tự mở rộng theo tỷ lệ
+iPhone khi video bắt đầu và thu gọn sau khi bạn chủ động ngắt kết nối xong.
+
+iPhone có thể tạm biến mất khỏi **This PC** khi USB chuyển từ duyệt ảnh sang
+nhận video. Khi đóng cửa sổ chính, app nhả điều khiển và ẩn giao diện trước;
+việc trả USB về chế độ bình thường có thể tiếp tục ở nền. Chờ quá trình này
+xong trước khi mở lại app hoặc xóa thư mục thử nghiệm.
+
 Không cần bật Control, cài app lên iPhone, đăng nhập Apple ID, bật Developer Mode
 hay jailbreak chỉ để dùng đường USB và chuột Bluetooth của iMirror. Không tự
 thay driver USB cha của iPhone bằng WinUSB; nếu không kết nối được, xem phần xử
@@ -143,6 +151,7 @@ FPS/độ trễ được xác nhận trên iPhone thật cho đường này.
 | --- | --- |
 | Không tìm thấy iPhone USB | Mở khóa, kiểm tra cáp dữ liệu/cổng USB, chấp nhận Trust, dùng Refresh và kiểm tra Apple Devices nhận được máy |
 | Có tên máy nhưng không có video | Chọn đúng thiết bị, bấm Connect; nếu vẫn lỗi, Copy Diagnostics để báo lỗi, không đổi driver bừa |
+| No PING / libusb0 -116 | Đóng iMirror, chờ dọn USB xong rồi cắm lại khi iPhone mở khóa. Nếu vẫn lỗi, khởi động lại iPhone đã khôi phục được trường hợp thực tế đã thử; không bảo đảm xử lý được mọi cấu hình |
 | Bluetooth Connected nhưng Control chưa Ready | Chờ trạng thái; kiểm tra AssistiveTouch. Nếu cần ghép lại, Forget PC trên iPhone và Remove iPhone trong Windows, rồi ghép từ AssistiveTouch → Devices |
 | Không thấy PC trong danh sách Bluetooth | Giữ Control bật và iMirror mở; kiểm tra Bluetooth Windows, khả năng adapter và thông báo trong Settings |
 | Con trỏ quá nhanh/chậm | Chỉnh Pointer sensitivity, đồng thời kiểm tra tracking speed của iPhone |
