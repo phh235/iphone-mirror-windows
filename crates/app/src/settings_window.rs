@@ -36,6 +36,7 @@ pub const DIAGNOSTICS: usize = 241;
 pub const WDA: usize = 242;
 pub const COPY_DIAGNOSTICS: usize = 243;
 const REVEAL_FOCUS: u32 = WM_APP + 91;
+const CANVAS: i32 = 270;
 const APPLY: usize = 250;
 const STATUS: i32 = 260;
 const SPEED_LABEL: i32 = 261;
@@ -125,6 +126,23 @@ impl Panel {
                 window,
                 armed: true,
             };
+            let canvas = CreateWindowExW(
+                WS_EX_CONTROLPARENT,
+                w!("STATIC"),
+                w!(""),
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                0,
+                0,
+                1,
+                1,
+                Some(window),
+                Some(HMENU(CANVAS as usize as *mut c_void)),
+                Some(instance.into()),
+                None,
+            )?;
+            if !SetWindowSubclass(canvas, Some(canvas_proc), 0x5344, window.0 as usize).as_bool() {
+                return Err(windows::core::Error::from_win32());
+            }
             let common = INITCOMMONCONTROLSEX {
                 dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
                 dwICC: ICC_BAR_CLASSES,
@@ -151,7 +169,7 @@ impl Panel {
                     y,
                     width,
                     height,
-                    Some(window),
+                    Some(if page < 4 { canvas } else { window }),
                     Some(HMENU(id as *mut c_void)),
                     Some(instance.into()),
                     None,
@@ -545,13 +563,13 @@ impl Panel {
                 (VSYNC, config.vsync),
                 (ADVANCED, config.advanced),
             ] {
-                if let Ok(child) = GetDlgItem(Some(self.window), id as i32) {
+                if let Ok(child) = child_control(self.window, id as i32) {
                     SendMessageW(child, BM_SETCHECK, Some(WPARAM(usize::from(checked))), None);
                 }
             }
             let ids = devices.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
             if self.devices != ids {
-                if let Ok(combo) = GetDlgItem(Some(self.window), DEVICE as i32) {
+                if let Ok(combo) = child_control(self.window, DEVICE as i32) {
                     SendMessageW(combo, CB_RESETCONTENT, None, None);
                     for device in devices {
                         let name = wide(&device.name);
@@ -566,7 +584,7 @@ impl Panel {
                 }
                 self.devices = ids;
             }
-            if let Ok(slider) = GetDlgItem(Some(self.window), SPEED as i32)
+            if let Ok(slider) = child_control(self.window, SPEED as i32)
                 && windows::Win32::UI::Input::KeyboardAndMouse::GetCapture() != slider
             {
                 SendMessageW(
@@ -580,15 +598,15 @@ impl Panel {
                 "Mouse sensitivity: {}%",
                 input.pointer_speed_percent
             ));
-            if let Ok(label) = GetDlgItem(Some(self.window), SPEED_LABEL) {
+            if let Ok(label) = child_control(self.window, SPEED_LABEL) {
                 let _ = SetWindowTextW(label, PCWSTR(speed.as_ptr()));
             }
             let status = control_guidance(config, input);
             let status = wide(status);
-            if let Ok(label) = GetDlgItem(Some(self.window), STATUS) {
+            if let Ok(label) = child_control(self.window, STATUS) {
                 let _ = SetWindowTextW(label, PCWSTR(status.as_ptr()));
             }
-            if let Ok(wda) = GetDlgItem(Some(self.window), WDA as i32) {
+            if let Ok(wda) = child_control(self.window, WDA as i32) {
                 let _ = EnableWindow(wda, config.advanced);
             }
         }
@@ -597,7 +615,7 @@ impl Panel {
     pub fn receiver_name(&self) -> String {
         let mut text = [0u16; 128]; // SAFETY: Fixed writable UTF-16 buffer for owned edit control.
         unsafe {
-            if let Ok(edit) = GetDlgItem(Some(self.window), RECEIVER as i32) {
+            if let Ok(edit) = child_control(self.window, RECEIVER as i32) {
                 let n = GetWindowTextW(edit, &mut text).max(0) as usize;
                 return String::from_utf16_lossy(&text[..n]);
             }
@@ -607,7 +625,7 @@ impl Panel {
     pub fn set_receiver_name(&self, name: &str) {
         let name = wide(name); // SAFETY: Native edit copies the temporary NUL-terminated string.
         unsafe {
-            if let Ok(edit) = GetDlgItem(Some(self.window), RECEIVER as i32) {
+            if let Ok(edit) = child_control(self.window, RECEIVER as i32) {
                 let _ = SetWindowTextW(edit, PCWSTR(name.as_ptr()));
             }
         }
@@ -647,8 +665,9 @@ impl Panel {
                 let mut client = RECT::default();
                 let mut origin = windows::Win32::Foundation::POINT::default();
                 GetWindowRect(item.window, &mut rect).map_err(|e| e.to_string())?;
-                GetClientRect(self.window, &mut client).map_err(|e| e.to_string())?;
-                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.window, &mut origin);
+                let parent = GetParent(item.window).map_err(|e| e.to_string())?;
+                GetClientRect(parent, &mut client).map_err(|e| e.to_string())?;
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut origin);
                 rect.left -= origin.x;
                 rect.right -= origin.x;
                 rect.top -= origin.y;
@@ -685,11 +704,74 @@ impl Panel {
             0,
         );
         layout(self.window, &context);
+        // SAFETY: Footer is a pinned child. Verify its actual rectangle after the
+        // final scroll position, not only while temporarily revealing each item.
+        unsafe {
+            let done = child_control(self.window, APPLY as i32).map_err(|e| e.to_string())?;
+            let mut rect = RECT::default();
+            let mut client = RECT::default();
+            let mut origin = windows::Win32::Foundation::POINT::default();
+            GetWindowRect(done, &mut rect).map_err(|e| e.to_string())?;
+            GetClientRect(self.window, &mut client).map_err(|e| e.to_string())?;
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.window, &mut origin);
+            if rect.left < origin.x
+                || rect.right > origin.x + client.right
+                || rect.top < origin.y
+                || rect.bottom > origin.y + client.bottom
+            {
+                return Err("Settings Done button is clipped after scrolling".into());
+            }
+        }
         println!(
             "Settings navigation passed: dpi={}, controls={checked}",
             theme::dpi(self.window)
         );
         Ok(())
+    }
+}
+fn child_control(window: HWND, id: i32) -> windows::core::Result<HWND> {
+    // SAFETY: Lookup is limited to the owned settings window and its content viewport.
+    unsafe {
+        GetDlgItem(Some(window), id)
+            .or_else(|_| GetDlgItem(Some(GetDlgItem(Some(window), CANVAS)?), id))
+    }
+}
+unsafe extern "system" fn canvas_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    owner: usize,
+) -> LRESULT {
+    let parent = HWND(owner as *mut c_void);
+    if message == WM_ERASEBKGND {
+        // SAFETY: Erase only the viewport rectangle. Using the parent's larger
+        // rectangle can paint over pinned controls when Windows supplies a print DC.
+        unsafe {
+            let mut rect = RECT::default();
+            let _ = GetClientRect(window, &mut rect);
+            windows::Win32::Graphics::Gdi::FillRect(
+                windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut c_void),
+                &rect,
+                theme::current(parent).brush,
+            );
+        }
+        return LRESULT(1);
+    }
+    if let Some(result) = theme::paint_message(parent, message, wparam, lparam) {
+        return result;
+    }
+    // SAFETY: Forward synchronous native control notifications only to this owned
+    // viewport's parent; all message buffers remain live until the call returns.
+    unsafe {
+        if matches!(message, WM_COMMAND | WM_HSCROLL | WM_MOUSEWHEEL) {
+            return SendMessageW(parent, message, Some(wparam), Some(lparam));
+        }
+        if message == WM_NCDESTROY {
+            let _ = RemoveWindowSubclass(window, Some(canvas_proc), id);
+        }
+        DefSubclassProc(window, message, wparam, lparam)
     }
 }
 fn control_guidance(config: &Config, input: &control::Snapshot) -> &'static str {
@@ -725,12 +807,32 @@ fn layout(window: HWND, context: &Context) {
     unsafe {
         let mut client = RECT::default();
         let _ = GetClientRect(window, &mut client);
-        let width = client.right.max(theme.px(680));
-        let height = client.bottom.max(theme.px(550));
+        let Ok(canvas) = GetDlgItem(Some(window), CANVAS) else {
+            return;
+        };
+        let sidebar = theme.px(164);
+        let viewport_width = (client.right - sidebar).max(1);
+        let viewport_height = (client.bottom - theme.px(64)).max(1);
+        let _ = MoveWindow(canvas, sidebar, 0, viewport_width, viewport_height, true);
+        let visible = context
+            .items
+            .iter()
+            .filter(|i| i.page == context.page && (!i.advanced || context.advanced));
+        let width = visible
+            .clone()
+            .map(|i| theme.px(i.x + i.width + 16) - sidebar)
+            .max()
+            .unwrap_or(1)
+            .max(viewport_width);
+        let height = visible
+            .map(|i| theme.px(i.y + i.height + 16))
+            .max()
+            .unwrap_or(1)
+            .max(viewport_height);
         let mut offsets = [0; 2];
         for (index, bar, extent, page) in [
-            (0, SB_HORZ, width, client.right),
-            (1, SB_VERT, height, client.bottom),
+            (0, SB_HORZ, width, viewport_width),
+            (1, SB_VERT, height, viewport_height),
         ] {
             let mut info = SCROLLINFO {
                 cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
@@ -749,19 +851,23 @@ fn layout(window: HWND, context: &Context) {
                 && (!item.advanced || context.advanced);
             let _ = ShowWindow(item.window, if visible { SW_SHOW } else { SW_HIDE });
             let x = if item.page == 4 && item.y == 492 {
-                width - theme.px(140)
+                client.right - theme.px(140)
             } else {
                 theme.px(item.x)
             };
             let y = if item.page == 4 && item.y == 492 {
-                height - theme.px(52)
+                client.bottom - theme.px(52)
             } else {
                 theme.px(item.y)
             };
             let _ = MoveWindow(
                 item.window,
-                x - offsets[0],
-                y - offsets[1],
+                if item.page < 4 {
+                    x - sidebar - offsets[0]
+                } else {
+                    x
+                },
+                if item.page < 4 { y - offsets[1] } else { y },
                 theme.px(item.width),
                 theme.px(item.height),
                 true,
@@ -825,7 +931,7 @@ unsafe extern "system" fn procedure(
                     if lparam.0 == 0 {
                         scroll(window, SB_HORZ, (wparam.0 & 0xffff) as i32, 0);
                         layout(window, &cell.borrow());
-                    } else if let Ok(slider) = GetDlgItem(Some(window), SPEED as i32) {
+                    } else if let Ok(slider) = child_control(window, SPEED as i32) {
                         let value = SendMessageW(slider, WM_USER, None, None).0;
                         let _ = PostMessageW(
                             Some(cell.borrow().owner),
@@ -921,17 +1027,20 @@ fn scroll(window: HWND, bar: SCROLLBAR_CONSTANTS, command: i32, delta: i32) {
 fn reveal(window: HWND, child: HWND) {
     // SAFETY: Child was supplied by an owned subclass; validate parent before querying geometry.
     unsafe {
-        if GetParent(child).ok() != Some(window) {
+        let Ok(canvas) = GetDlgItem(Some(window), CANVAS) else {
+            return;
+        };
+        if GetParent(child).ok() != Some(canvas) {
             return;
         }
         let mut bounds = RECT::default();
         let mut client = RECT::default();
-        if GetWindowRect(child, &mut bounds).is_err() || GetClientRect(window, &mut client).is_err()
+        if GetWindowRect(child, &mut bounds).is_err() || GetClientRect(canvas, &mut client).is_err()
         {
             return;
         }
         let mut origin = windows::Win32::Foundation::POINT::default();
-        if !windows::Win32::Graphics::Gdi::ClientToScreen(window, &mut origin).as_bool() {
+        if !windows::Win32::Graphics::Gdi::ClientToScreen(canvas, &mut origin).as_bool() {
             return;
         }
         let left = bounds.left - origin.x;

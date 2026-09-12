@@ -52,6 +52,12 @@ pub fn save(window: HWND, path: &Path) -> Result<(), Box<dyn std::error::Error>>
         };
         let previous = SelectObject(dc, bitmap.into());
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let _ = RedrawWindow(
+                Some(window),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
             if !PrintWindow(window, dc, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool() {
                 return Err("Native PrintWindow failed".into());
             }
