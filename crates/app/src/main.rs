@@ -13,7 +13,6 @@ mod settings_window;
 mod svg_icons;
 mod theme;
 mod toolbar;
-#[path = "production_ui.rs"]
 mod ui;
 mod ui_input;
 mod ui_snapshot;
