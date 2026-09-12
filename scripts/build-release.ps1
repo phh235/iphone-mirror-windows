@@ -23,6 +23,7 @@ try {
     $dist = Join-Path $root 'dist'
     New-Item -ItemType Directory -Force $stage,$dist | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'target/release/iMirror.exe'),(Join-Path $root 'target/release/libusb-1.0.dll'),(Join-Path $root 'target/release/libusb0.dll'),(Join-Path $root 'target/release/iPhoneMirror.UsbConfigurationSwitch.exe') -Destination $stage
+    & (Join-Path $PSScriptRoot 'prepare-vc-runtime.ps1') -Destination $stage
     & (Join-Path $PSScriptRoot 'prepare-airplay.ps1') -Destination (Join-Path $stage 'AirPlay')
     $noticeDir = Join-Path $stage 'licenses'
     Invoke-Checked python @((Join-Path $PSScriptRoot 'runtime-inventory.py'),'--runtime',(Join-Path $stage 'AirPlay'),'--output',$noticeDir)

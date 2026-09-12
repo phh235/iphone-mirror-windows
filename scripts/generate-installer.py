@@ -24,7 +24,9 @@ def main():
         Description="Native iPhone mirroring for Windows",Comments="Engineering preview; see VALIDATION.md for outstanding release gates.")
     add(product,"MajorUpgrade",DowngradeErrorMessage="A newer version of iMirror is already installed.")
     add(product,"MediaTemplate",EmbedCab="yes",CompressionLevel="high")
-    add(product,"Condition",Message="iMirror requires 64-bit Windows.").text="VersionNT64"
+    build_property=add(product,"Property",Id="IMIRROR_WINDOWS_BUILD")
+    add(build_property,"RegistrySearch",Id="WindowsBuildSearch",Root="HKLM",Key=r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",Name="CurrentBuildNumber",Type="raw",Win64="yes")
+    add(product,"Condition",Message="iMirror requires Windows 11 x64 or Windows 10 22H2 x64.").text="Installed OR (VersionNT64 AND IMIRROR_WINDOWS_BUILD >= 19045)"
     add(product,"Property",Id="ARPNOMODIFY",Value="1")
     add(product,"Property",Id="WIXUI_INSTALLDIR",Value="INSTALLFOLDER")
     add(product,"WixVariable",Id="WixUILicenseRtf",Value=str(ROOT/"installer/license.rtf"))
