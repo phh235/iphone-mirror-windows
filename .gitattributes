@@ -1,0 +1,4 @@
+# Preserve the pinned upstream asset bytes on Windows checkouts.
+assets/fluent/*.svg -text
+assets/fluent/LICENSE -text
+assets/fluent/NOTICE -text

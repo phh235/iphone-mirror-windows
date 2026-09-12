@@ -471,3 +471,35 @@ frame timing, audio and Valeria/09:41 behavior are unchanged. No Phase 6 benchma
 30-minute stability run, current UxPlay deployment, installer build or clean-VM
 test is run before the user's explicit acceptance of the Phase 5 executable.
 See HARDENING_PHASE5.md for acceptance scope. Hardware result remains PENDING.
+
+## 2026-09-12 — Compact native chrome and official Fluent SVGs
+
+Removed the bottom toolbar reservation and made the top actions compact native
+icon buttons with native tooltips and a narrow-window overflow menu. Settings
+uses compact sections, a fixed sidebar and independently scrolling content.
+The native trackbar remains responsible for input; custom painting supplies a
+single themed track/thumb. Native button capture ownership and keyboard focus
+fixes from 7579dae are retained; no phone-input algorithm was changed.
+
+Replaced hand-drawn icon primitives with eight unchanged Microsoft Fluent System
+Icons Regular SVGs pinned at 9cf8af0f95a555918a60b8147a2f33a6a1248442. MIT notices
+and source hashes are in assets/fluent and are included by release staging.
+Direct2D's native SVG parser creates cached vector geometries. A cached software
+DC render target paints the UI's foreground color; no video device or context is
+used. No icon framework, font dependency, PNG or SVG file I/O on paint is added.
+
+Formatting, strict Clippy, 52 tests and release compilation pass. The exact
+staged EXE passed 50 dark/light UI/DPI smoke checks and two small-window checks.
+Three icon microbenchmarks exercised 120 palette/DPI cases each. The measured
+native SVG cost is about 35–39 ms parse/cache initialization, 0.285–0.312 ms warm
+paint average and about 2 MiB additional private memory in matched idle app runs.
+All 198 frozen media hashes still match; BLE/Raw Input/ControlManager files are
+unchanged. Full measurements, EXE hash and limitations: UI_POLISH_VALIDATION.md.
+
+The initial idle harness accidentally wrote a BOM using PowerShell 5 UTF8, which
+the JSON parser rejected. Fixed only the isolated test-profile writer to emit
+UTF-8 without BOM; user configuration was preserved. A second run was rejected
+when USB capture appeared. Final measurements include two verified idle runs
+each for original r2, compact pre-SVG and compact SVG builds. No 30-minute or
+physical first-click acceptance is claimed. Installer/public release work stays
+behind the user's physical validation gate.
