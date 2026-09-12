@@ -2,10 +2,16 @@
 mod benchmark;
 mod benchmark_preview;
 mod ble_panel;
-mod input;
+mod control;
+mod low_latency;
 mod pointer_settings;
+mod raw_input;
 mod settings;
+mod settings_window;
+mod theme;
+#[path = "production_ui.rs"]
 mod ui;
+mod ui_snapshot;
 mod worker;
 use imirror_native_core::Engine;
 fn execute() -> Result<(), Box<dyn std::error::Error>> {

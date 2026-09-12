@@ -1,5 +1,5 @@
 //! BLE-only modeless diagnostics. No video viewport or media settings are changed.
-use crate::input::Snapshot;
+use crate::control::Snapshot;
 use imirror_input_core::{DEFAULT_POINTER_SPEED, MAX_POINTER_SPEED, MIN_POINTER_SPEED};
 use std::ffi::c_void;
 use windows::Win32::UI::Controls::{
@@ -319,7 +319,7 @@ impl BlePanel {
             input.message,
             input.ble_error.as_deref().unwrap_or("none"),
             input.last_diagnostic.as_deref().unwrap_or("not sent"),
-            crate::input::diagnostic_path()
+            crate::control::diagnostic_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "unavailable".into())
         );

@@ -17,7 +17,7 @@ imirror-input-wda = { path = "../input-wda" }
 imirror-input-ble = { path = "../input-ble" }
 imirror-platform-windows = { path = "../platform-windows" }
 imirror-native-core = { path = "../native-core" }
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_System_SystemServices", "Win32_Storage_Xps"] }
 serde_json.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true

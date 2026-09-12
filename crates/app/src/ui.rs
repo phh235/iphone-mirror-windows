@@ -1,4 +1,6 @@
-use crate::input::{Command as InputCommand, InputWorker, Snapshot as InputSnapshot};
+use crate::control::{
+    Command as InputCommand, ControlManager as InputWorker, Snapshot as InputSnapshot,
+};
 use crate::worker::{Command, Snapshot, Worker};
 use imirror_coordinate_map::{Mapper, Point, Rect, Rotation, ScaleMode, Size};
 use imirror_input_core::{Button, Gesture, Input};
@@ -1008,49 +1010,13 @@ fn mapped_checked(state: &Ui, p: Point) -> Result<Point, String> {
         )
     })
 }
-fn hid_key(vk: usize) -> Option<u8> {
-    match vk {
-        0x41..=0x5a => Some((vk - 0x41 + 4) as u8),
-        0x31..=0x39 => Some((vk - 0x31 + 30) as u8),
-        0x30 => Some(39),
-        0x0d => Some(40),
-        0x08 => Some(42),
-        0x09 => Some(43),
-        0x20 => Some(44),
-        0x25 => Some(80),
-        0x26 => Some(82),
-        0x27 => Some(79),
-        0x28 => Some(81),
-        0x2e => Some(76),
-        0xba => Some(51),
-        0xbb => Some(46),
-        0xbc => Some(54),
-        0xbd => Some(45),
-        0xbe => Some(55),
-        0xbf => Some(56),
-        0xc0 => Some(53),
-        0xdb => Some(47),
-        0xdc => Some(49),
-        0xdd => Some(48),
-        0xde => Some(52),
-        _ => None,
-    }
-}
 fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPARAM) {
-    let now = imirror_input_core::metrics::now_ns();
-    let low = (wparam.0 >> 32) as u64;
-    let now_us = now / 1000;
-    let mut received_us = (now_us & !0xffff_ffff) | low;
-    if received_us > now_us {
-        received_us = received_us.wrapping_sub(1u64 << 32);
-    }
-    let received = received_us.saturating_mul(1000).min(now);
-    let wparam = WPARAM(wparam.0 & 0xffff_ffff);
     let p = Point {
         x: (lparam.0 as u16 as i16) as f64,
         y: ((lparam.0 >> 16) as u16 as i16) as f64,
     };
-    // SAFETY: GetKeyState and capture/window calls operate on this UI thread.
+    let wparam = WPARAM(wparam.0 & 0xffff_ffff);
+    // SAFETY: Window/capture operations belong to this UI thread; movement is handled on the Raw Input thread.
     unsafe {
         let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
         let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
@@ -1065,80 +1031,72 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
             return;
         }
         if msg == WM_LBUTTONDOWN {
-            let mapping = mapped_checked(state, p);
-            if let Ok(point) = mapping {
+            if let Some(point) = mapped(state, p) {
                 state.captured = true;
-                state.last_mouse = Some(p);
-                if state.input_snapshot.mode == 2 {
-                    state.gesture.press(Some(point), Instant::now());
-                }
                 if state.input_snapshot.mode == 1 {
-                    state.input.send(InputCommand::Mouse(1, 0, 0, 0, received));
+                    if !state.input.is_ready() {
+                        state.captured = false;
+                        return;
+                    }
+                    let mut bounds = RECT::default();
+                    if GetClientRect(state.preview, &mut bounds).is_ok() {
+                        let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+                        if windows::Win32::Graphics::Gdi::ClientToScreen(state.preview, &mut origin)
+                            .as_bool()
+                        {
+                            bounds.left += origin.x;
+                            bounds.right += origin.x;
+                            bounds.top += origin.y;
+                            bounds.bottom += origin.y;
+                            state.input.capture(hwnd, bounds, 1);
+                        }
+                    }
+                } else if state.input_snapshot.mode == 2 {
+                    state.gesture.press(Some(point), Instant::now());
                 }
             } else {
                 release_input(state);
                 let _ = ReleaseCapture();
             }
         } else if msg == WM_LBUTTONUP {
-            if state.input_snapshot.mode == 2 {
-                if let Some(action) = state.gesture.release(mapped(state, p), Instant::now()) {
-                    state.input.send(InputCommand::Action(action));
-                }
-            } else if state.captured {
-                state.input.send(InputCommand::Mouse(0, 0, 0, 0, received));
+            if state.input_snapshot.mode == 2
+                && let Some(action) = state.gesture.release(mapped(state, p), Instant::now())
+            {
+                state.input.send(InputCommand::Action(action));
             }
             let _ = ReleaseCapture();
-        } else if msg == WM_MOUSEMOVE && state.captured && state.input_snapshot.mode == 1 {
-            if mapped(state, p).is_none() {
-                release_input(state);
-                return;
-            }
-            if let Some(last) = state.last_mouse.replace(p) {
-                state.input.send(InputCommand::Mouse(
-                    if wparam.0 & 1 != 0 { 1 } else { 0 },
-                    (p.x - last.x) as i32,
-                    (p.y - last.y) as i32,
-                    0,
-                    received,
-                ));
-            }
-        } else if msg == WM_MOUSEWHEEL && state.captured {
-            let mut client_point = windows::Win32::Foundation::POINT {
+        } else if msg == WM_MOUSEWHEEL && state.captured && state.input_snapshot.mode == 2 {
+            let mut point = windows::Win32::Foundation::POINT {
                 x: p.x as i32,
                 y: p.y as i32,
             };
-            let _ = windows::Win32::Graphics::Gdi::ScreenToClient(state.preview, &mut client_point);
+            let _ = windows::Win32::Graphics::Gdi::ScreenToClient(state.preview, &mut point);
             if mapped(
                 state,
                 Point {
-                    x: client_point.x as f64,
-                    y: client_point.y as f64,
+                    x: point.x as f64,
+                    y: point.y as f64,
                 },
             )
             .is_none()
             {
                 return;
             }
-            let delta = ((wparam.0 >> 16) as u16 as i16) as i32 / 120;
-            if state.input_snapshot.mode == 1 {
-                state
-                    .input
-                    .send(InputCommand::Mouse(0, 0, 0, delta, received));
-            } else if let Some(size) = state.input_snapshot.geometry {
+            if let Some(size) = state.input_snapshot.geometry {
+                let delta = ((wparam.0 >> 16) as u16 as i16) as f64 / 120.0;
                 let from = Point {
                     x: size.width * 0.5,
                     y: size.height * 0.5,
                 };
                 let to = if shift {
                     Point {
-                        x: (from.x + delta as f64 * size.width * 0.2).clamp(1.0, size.width - 1.0),
+                        x: (from.x + delta * size.width * 0.2).clamp(1.0, size.width - 1.0),
                         y: from.y,
                     }
                 } else {
                     Point {
                         x: from.x,
-                        y: (from.y + delta as f64 * size.height * 0.2)
-                            .clamp(1.0, size.height - 1.0),
+                        y: (from.y + delta * size.height * 0.2).clamp(1.0, size.height - 1.0),
                     }
                 };
                 state.input.send(InputCommand::Action(Input::Swipe {
@@ -1147,24 +1105,6 @@ fn video_input(hwnd: HWND, state: &mut Ui, msg: u32, wparam: WPARAM, lparam: LPA
                     duration: std::time::Duration::from_millis(180),
                 }));
             }
-        } else if (msg == WM_KEYDOWN || msg == WM_KEYUP)
-            && state.captured
-            && state.input_snapshot.mode == 1
-        {
-            if let Some(key) = hid_key(wparam.0) {
-                if msg == WM_KEYDOWN && !state.keys.contains(&key) {
-                    state.keys.push(key);
-                }
-                if msg == WM_KEYUP {
-                    state.keys.retain(|v| *v != key);
-                }
-            }
-            let modifiers = u8::from(ctrl)
-                | (u8::from(shift) << 1)
-                | (u8::from(GetKeyState(VK_MENU.0 as i32) < 0) << 2);
-            state
-                .input
-                .send(InputCommand::Key(modifiers, state.keys.clone()));
         } else if msg == WM_CHAR && state.captured && state.input_snapshot.mode == 2 {
             let unit = wparam.0 as u16;
             if (0xd800..=0xdbff).contains(&unit) {
