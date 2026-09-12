@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod app_icon;
+mod app_instance;
 mod benchmark;
 mod benchmark_preview;
 mod ble_panel;
@@ -66,7 +67,19 @@ fn execute() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("{json}");
     } else {
-        ui::run(args.iter().any(|a| a == "--ui-smoke-test"))?;
+        let smoke = args.iter().any(|a| a == "--ui-smoke-test");
+        let _instance = if smoke {
+            None
+        } else {
+            match app_instance::Instance::acquire()? {
+                Some(instance) => Some(instance),
+                None => {
+                    app_instance::show_existing();
+                    return Ok(());
+                }
+            }
+        };
+        ui::run(smoke)?;
     }
     Ok(())
 }

@@ -13,6 +13,9 @@ pub fn tr(english: &str) -> &str {
         return english;
     }
     match english {
+        "iMirror is still starting or closing. Please wait a moment." => {
+            "iMirror đang mở hoặc đóng. Vui lòng đợi một chút."
+        }
         "General" => "Chung",
         "Language" => "Ngôn ngữ",
         "Choose the application language." => "Chọn ngôn ngữ hiển thị của ứng dụng.",
