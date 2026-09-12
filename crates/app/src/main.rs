@@ -5,6 +5,7 @@ mod benchmark_preview;
 mod ble_panel;
 mod control;
 mod diagnostics;
+mod i18n;
 mod low_latency;
 mod pointer_settings;
 mod raw_input;
@@ -16,6 +17,7 @@ mod toolbar;
 mod ui;
 mod ui_input;
 mod ui_snapshot;
+mod window_layout;
 mod worker;
 use imirror_native_core::Engine;
 fn execute() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,7 +77,7 @@ fn main() {
             eprintln!("iMirror: {error}");
             std::process::exit(1);
         }
-        let message: Vec<u16> = format!("iMirror could not start:\n{error}")
+        let message: Vec<u16> = format!("{}:\n{error}", i18n::tr("iMirror could not start"))
             .encode_utf16()
             .chain(Some(0))
             .collect();

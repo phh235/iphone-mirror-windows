@@ -837,11 +837,11 @@ impl Theme {
                 .0
                 .clamp(0, 255) as usize
             } else {
-                let placeholder = "No iPhone detected";
+                let placeholder = crate::i18n::tr("No iPhone detected");
                 for (to, c) in text.iter_mut().zip(placeholder.encode_utf16()) {
                     *to = c;
                 }
-                placeholder.len()
+                placeholder.encode_utf16().count()
             };
             let mut rect = draw.rcItem;
             rect.left += self.px(8);

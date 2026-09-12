@@ -47,6 +47,12 @@ pub enum DisplayChoice {
     OneToOne,
     Fill,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Language {
+    #[default]
+    English,
+    Vietnamese,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -61,6 +67,7 @@ pub struct Config {
     pub control_enabled: bool,
     pub advanced: bool,
     pub display: DisplayChoice,
+    pub language: Language,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -76,6 +83,7 @@ impl Default for Config {
             control_enabled: false,
             advanced: false,
             display: DisplayChoice::Fit,
+            language: Language::English,
         }
     }
 }
@@ -178,6 +186,20 @@ mod tests {
             assert!((Duration::from_millis(250)..=Duration::from_secs(8)).contains(&delay));
             assert!(!r.ready(now));
         }
+    }
+    #[test]
+    fn language_defaults_and_preserves_explicit_display_mode() -> Result<(), ConfigError> {
+        assert_eq!(Config::parse(b"{}")?.language, Language::English);
+        for display in ["Fit", "OneToOne", "Fill"] {
+            let json = format!(r#"{{"version":3,"language":"Vietnamese","display":"{display}"}}"#);
+            let config = Config::parse(json.as_bytes())?;
+            assert_eq!(config.language, Language::Vietnamese);
+            let encoded = serde_json::to_vec(&config)?;
+            let restored = Config::parse(&encoded)?;
+            assert_eq!(restored.display, config.display);
+            assert_eq!(restored.language, Language::Vietnamese);
+        }
+        Ok(())
     }
     #[test]
     fn config_migrates_old_and_rejects_future() -> Result<(), ConfigError> {

@@ -1,6 +1,6 @@
-//! Native modeless settings with four pages; actions are posted to the main window.
-use crate::{control, theme};
-use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice};
+//! Native modeless settings; actions are posted to the main window.
+use crate::{control, i18n, theme};
+use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice, Language};
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
@@ -40,6 +40,11 @@ pub const ADVANCED: usize = 240;
 pub const DIAGNOSTICS: usize = 241;
 pub const WDA: usize = 242;
 pub const COPY_DIAGNOSTICS: usize = 243;
+pub const LANGUAGE_EN: usize = 280;
+pub const LANGUAGE_VI: usize = 281;
+pub const GENERAL_PAGE: usize = 4;
+const PAGE_COUNT: usize = 5;
+const NAVIGATION: usize = PAGE_COUNT;
 const REVEAL_FOCUS: u32 = WM_APP + 91;
 const CANVAS: i32 = 270;
 const APPLY: usize = 250;
@@ -57,6 +62,7 @@ struct Item {
     width: i32,
     height: i32,
     advanced: bool,
+    source_text: String,
 }
 struct Context {
     owner: HWND,
@@ -72,6 +78,7 @@ pub struct Panel {
     devices: Vec<String>,
     last_speed: Option<u16>,
     last_status: Option<&'static str>,
+    language: Language,
 }
 struct CreatingWindow {
     window: HWND,
@@ -120,10 +127,11 @@ impl Panel {
             if RegisterClassW(&class) == 0 {
                 return Err(windows::core::Error::from_win32());
             }
+            let title = wide(i18n::tr("iMirror Settings"));
             let window = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 w!("iMirrorSettings"),
-                w!("iMirror Settings"),
+                PCWSTR(title.as_ptr()),
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL | WS_HSCROLL,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -171,7 +179,7 @@ impl Panel {
                        height: i32,
                        advanced: bool|
              -> windows::core::Result<HWND> {
-                let value = wide(text);
+                let value = wide(i18n::tr(text));
                 let child = CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
                     class,
@@ -181,7 +189,7 @@ impl Panel {
                     y,
                     width,
                     height,
-                    Some(if page < 4 { canvas } else { window }),
+                    Some(if page < PAGE_COUNT { canvas } else { window }),
                     Some(HMENU(id as *mut c_void)),
                     Some(instance.into()),
                     None,
@@ -199,21 +207,28 @@ impl Panel {
                     width,
                     height,
                     advanced,
+                    source_text: text.to_owned(),
                 });
                 Ok(child)
             };
-            for (index, title) in ["Connection", "Control", "Display", "Advanced"]
-                .iter()
-                .enumerate()
+            for (position, (index, title)) in [
+                (GENERAL_PAGE, "General"),
+                (0, "Connection"),
+                (1, "Control"),
+                (2, "Display"),
+                (3, "Advanced"),
+            ]
+            .iter()
+            .enumerate()
             {
                 let navigation = add(
                     200 + index,
                     title,
                     w!("BUTTON"),
                     WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
-                    4,
+                    NAVIGATION,
                     12,
-                    16 + index as i32 * 42,
+                    16 + position as i32 * 42,
                     136,
                     38,
                     false,
@@ -252,6 +267,7 @@ impl Panel {
                 (1, "Control", "Mouse and keyboard control for iPhone."),
                 (2, "Display", "Choose how the image fits your window."),
                 (3, "Advanced", "Optional tools and troubleshooting."),
+                (GENERAL_PAGE, "General", "Choose the application language."),
             ] {
                 text(title, page, 180, 20, 560, 28, 1, false)?;
                 text(description, page, 180, 52, 560, 22, 2, false)?;
@@ -259,6 +275,41 @@ impl Panel {
             let radio = WS_TABSTOP | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32);
             let check = WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32);
             let button = WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32);
+            text("Language", GENERAL_PAGE, 180, 88, 520, 20, 3, false)?;
+            add(
+                LANGUAGE_EN,
+                "English",
+                w!("BUTTON"),
+                radio | WS_GROUP,
+                GENERAL_PAGE,
+                180,
+                120,
+                510,
+                28,
+                false,
+            )?;
+            add(
+                LANGUAGE_VI,
+                "Tiếng Việt",
+                w!("BUTTON"),
+                radio,
+                GENERAL_PAGE,
+                180,
+                156,
+                510,
+                28,
+                false,
+            )?;
+            text(
+                "Changes apply immediately and are saved automatically.",
+                GENERAL_PAGE,
+                180,
+                206,
+                520,
+                48,
+                2,
+                false,
+            )?;
             text("Connection mode", 0, 180, 88, 520, 20, 3, false)?;
             for (i, (id, title)) in [(AUTO, "Automatic"), (USB, "USB"), (WIRELESS, "Wireless")]
                 .into_iter()
@@ -541,7 +592,7 @@ impl Panel {
                 "Done",
                 w!("BUTTON"),
                 button,
-                4,
+                NAVIGATION,
                 700,
                 492,
                 100,
@@ -551,7 +602,7 @@ impl Panel {
             let appearance = theme::refresh(window);
             appearance.apply_fonts(window);
             for item in &context.borrow().items {
-                if item.page < 4 && item.y == 22 {
+                if item.page < PAGE_COUNT && item.y == 22 {
                     appearance.set_font(item.window, true);
                 }
             }
@@ -563,11 +614,12 @@ impl Panel {
                 devices: Vec::new(),
                 last_speed: None,
                 last_status: None,
+                language: i18n::language(),
             })
         }
     }
     pub fn show(&self, page: usize) {
-        self.context.borrow_mut().page = page.min(3);
+        self.context.borrow_mut().page = page.min(PAGE_COUNT - 1);
         layout(self.window, &self.context.borrow()); // SAFETY: Owned modeless window, no input sent to the phone.
         unsafe {
             let _ = ShowWindow(self.window, SW_SHOW);
@@ -580,6 +632,26 @@ impl Panel {
         input: &control::Snapshot,
         devices: &[imirror_native_core::Device],
     ) {
+        if self.language != config.language {
+            self.language = config.language;
+            // SAFETY: Re-label only static app-owned controls; keep device names,
+            // receiver input and current numeric values unchanged.
+            unsafe {
+                for item in &self.context.borrow().items {
+                    if !item.source_text.is_empty()
+                        && !matches!(item.id, RECEIVER | DEVICE)
+                        && item.id != SPEED_LABEL as usize
+                    {
+                        let value = wide(i18n::tr(&item.source_text));
+                        let _ = SetWindowTextW(item.window, PCWSTR(value.as_ptr()));
+                    }
+                }
+                let title = wide(i18n::tr("iMirror Settings"));
+                let _ = SetWindowTextW(self.window, PCWSTR(title.as_ptr()));
+            }
+            self.last_status = None;
+            layout(self.window, &self.context.borrow());
+        }
         let (layout_changed, display_speed) = {
             let mut state = self.context.borrow_mut();
             let wireless = config.connection == ConnectionChoice::Wireless;
@@ -615,6 +687,8 @@ impl Panel {
                 (FILL, config.display == DisplayChoice::Fill),
                 (VSYNC, config.vsync),
                 (ADVANCED, config.advanced),
+                (LANGUAGE_EN, config.language == Language::English),
+                (LANGUAGE_VI, config.language == Language::Vietnamese),
             ] {
                 if let Ok(child) = child_control(self.window, id as i32)
                     && SendMessageW(child, BM_GETCHECK, None, None).0 != isize::from(checked)
@@ -661,7 +735,7 @@ impl Panel {
                 }
                 self.last_speed = Some(display_speed);
             }
-            let status = control_guidance(config, input);
+            let status = i18n::tr(control_guidance(config, input));
             if self.last_status != Some(status) {
                 let value = wide(status);
                 if let Ok(label) = child_control(self.window, STATUS) {
@@ -868,12 +942,12 @@ fn control_guidance(config: &Config, input: &control::Snapshot) -> &'static str 
     }
 }
 fn item_visible(item: &Item, context: &Context) -> bool {
-    (item.page == 4 || item.page == context.page)
+    (item.page == NAVIGATION || item.page == context.page)
         && (!item.advanced || context.advanced)
         && (!matches!(item.id, RECEIVER | WIRELESS_TITLE | WIRELESS_LABEL) || context.wireless)
 }
 fn item_rect(item: &Item, context: &Context, width: i32) -> (i32, i32, i32, i32) {
-    if item.page == 4 {
+    if item.page == NAVIGATION {
         return (item.x, item.y, item.width, item.height);
     }
     let mut x = item.x - 160;
@@ -936,7 +1010,7 @@ fn layout(window: HWND, context: &Context) {
         let visible = context
             .items
             .iter()
-            .filter(|i| item_visible(i, context) && i.page < 4);
+            .filter(|i| item_visible(i, context) && i.page < PAGE_COUNT);
         let width = visible
             .clone()
             .map(|i| {
@@ -977,14 +1051,14 @@ fn layout(window: HWND, context: &Context) {
             let r = item_rect(item, context, logical_width);
             let x = if item.id == APPLY {
                 client.right - theme.px(120)
-            } else if item.page < 4 {
+            } else if item.page < PAGE_COUNT {
                 theme.px(r.0) - offsets[0]
             } else {
                 theme.px(item.x)
             };
             let y = if item.id == APPLY {
                 client.bottom - theme.px(48)
-            } else if item.page < 4 {
+            } else if item.page < PAGE_COUNT {
                 theme.px(r.1) - offsets[1]
             } else {
                 theme.px(item.y)
@@ -998,7 +1072,7 @@ fn layout(window: HWND, context: &Context) {
                 true,
             );
         }
-        for i in 0..4 {
+        for i in 0..PAGE_COUNT as i32 {
             if let Ok(button) = GetDlgItem(Some(window), 200 + i) {
                 theme::set_active(button, i as usize == context.page);
             }
@@ -1036,7 +1110,7 @@ unsafe extern "system" fn procedure(
             match message {
                 WM_COMMAND => {
                     let id = wparam.0 & 0xffff;
-                    if (200..204).contains(&id) {
+                    if (200..200 + PAGE_COUNT).contains(&id) {
                         cell.borrow_mut().page = id - 200;
                         layout(window, &cell.borrow());
                         return LRESULT(0);
@@ -1052,7 +1126,9 @@ unsafe extern "system" fn procedure(
                     } else {
                         SendMessageW(HWND(lparam.0 as *mut _), BM_GETCHECK, None, None).0
                     };
-                    if (210..244).contains(&id) && id != RECEIVER {
+                    if ((210..244).contains(&id) && id != RECEIVER)
+                        || matches!(id, LANGUAGE_EN | LANGUAGE_VI)
+                    {
                         let _ = PostMessageW(
                             Some(cell.borrow().owner),
                             EVENT,

@@ -2,11 +2,12 @@
 use crate::{
     ble_panel,
     control::{self, Backend, ControlManager},
-    settings_window as settings, theme, toolbar,
+    i18n, settings_window as settings, theme, toolbar,
+    window_layout::{self, Chrome, Extent},
     worker::{self, Worker},
 };
 use imirror_coordinate_map::{Mapper, Point, Rect, Rotation, ScaleMode, Size};
-use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice};
+use imirror_device::{Config, ConnectionChoice, ControlChoice, DisplayChoice, Language};
 use imirror_input_core::{Button, Gesture, Input};
 use std::{
     cell::{Cell, RefCell},
@@ -47,7 +48,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 fn label(window: HWND, s: &str) {
-    let _ = label_changed(window, s);
+    let _ = label_changed(window, i18n::tr(s));
 }
 fn label_changed(window: HWND, s: &str) -> bool {
     // SAFETY: UI-owned handle; avoid allocating text when the existing label is unchanged.
@@ -136,6 +137,11 @@ struct Ui {
     last_geometry: (u32, u32),
     last_home: bool,
     recent_errors: std::collections::VecDeque<String>,
+    sizing: bool,
+    needs_autosize: bool,
+    window_baseline: Option<serde_json::Value>,
+    layout_fixture: Option<Extent>,
+    last_monitor: Option<(i32, i32, i32, i32)>,
 }
 struct WindowLifetime<'a> {
     window: HWND,
@@ -161,6 +167,138 @@ impl Drop for WindowLifetime<'_> {
     }
 }
 impl Ui {
+    fn source_size(&self) -> Option<Extent> {
+        let mut size = if self.video.status.width > 0 && self.video.status.height > 0 {
+            Extent {
+                width: self.video.status.width as i32,
+                height: self.video.status.height as i32,
+            }
+        } else {
+            self.layout_fixture?
+        };
+        if self.rotation % 2 != 0 {
+            std::mem::swap(&mut size.width, &mut size.height);
+        }
+        Some(size)
+    }
+    fn chrome(&self) -> windows::core::Result<Chrome> {
+        if self.window.0.is_null() || self.preview.0.is_null() {
+            return Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_INVALIDARG,
+                "Window layout is not initialized",
+            ));
+        }
+        let appearance = theme::current(self.window);
+        let (name, status) = toolbar_measurements(self);
+        // SAFETY: Native non-client DPI belongs to this HWND. Smoke-test content
+        // DPI overrides do not pretend to change the monitor's real caption DPI.
+        let native_dpi = unsafe { GetDpiForWindow(self.window) }.max(96);
+        Ok(Chrome {
+            dpi: appearance.dpi,
+            borders: window_layout::borders(self.window, native_dpi)?,
+            name,
+            status,
+            home: self.control.capabilities().home && self.input.geometry.is_some(),
+        })
+    }
+    fn resize_to_phone(&mut self, suggested: Option<&RECT>) -> bool {
+        if self.config.display != DisplayChoice::Fit {
+            self.needs_autosize = false;
+            return false;
+        }
+        // SAFETY: Read-only state of the UI-owned top-level window.
+        if self.sizing || self.fullscreen.is_some() || unsafe { IsZoomed(self.window).as_bool() } {
+            return false;
+        }
+        // SAFETY: Do not relocate chrome under a native button/slider press.
+        // This defers layout only; no click is retried or synthesized.
+        let capture = unsafe { GetCapture() };
+        if !capture.0.is_null() && capture != self.preview {
+            return false;
+        }
+        let Some(source) = self.source_size() else {
+            return false;
+        };
+        let result = (|| -> windows::core::Result<bool> {
+            let monitor = window_layout::monitor(self.window, suggested)?;
+            let chrome = self.chrome()?;
+            let Some(size) = chrome.natural(source, monitor.rcWork) else {
+                return Ok(false);
+            };
+            if self.window_baseline.is_none() {
+                let mut baseline = self.window_report();
+                baseline["requested_video"] =
+                    serde_json::json!([size.video.width, size.video.height]);
+                baseline["requested_toolbar_height"] = serde_json::json!(size.toolbar);
+                self.window_baseline = Some(baseline);
+            }
+            let rect = window_layout::centered(size.outer, monitor.rcWork);
+            self.control.release();
+            // SAFETY: Resize only the containing window. The existing preview
+            // HWND and its native video session/renderer remain unchanged.
+            unsafe {
+                SetWindowPos(
+                    self.window,
+                    None,
+                    rect.left,
+                    rect.top,
+                    size.outer.width,
+                    size.outer.height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )?;
+            }
+            self.needs_autosize = false;
+            self.last_monitor = Some(monitor_key(monitor.rcWork));
+            layout(self);
+            Ok(true)
+        })();
+        match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                crate::diagnostics::remember(
+                    &mut self.recent_errors,
+                    &format!("Window sizing: {error}"),
+                );
+                false
+            }
+        }
+    }
+    fn window_report(&self) -> serde_json::Value {
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        let mut video = RECT::default();
+        // SAFETY: Inspect this app's own live windows; no pixels or frames are read back.
+        let result = unsafe {
+            GetWindowRect(self.window, &mut outer)
+                .and_then(|_| GetClientRect(self.window, &mut client))
+                .and_then(|_| GetClientRect(self.preview, &mut video))
+        };
+        if let Err(error) = result {
+            return serde_json::json!({"error":error.to_string()});
+        }
+        let viewport = Extent {
+            width: video.right,
+            height: video.bottom,
+        };
+        let source = self.source_size();
+        let sides = if self.config.display == DisplayChoice::Fit {
+            source.map(|s| window_layout::side_padding(s, viewport))
+        } else {
+            None
+        };
+        serde_json::json!({
+            "evidence":if self.layout_fixture.is_some(){"software_layout_fixture"}else{"live_window_geometry"},
+            "source_dimensions":source.map(|s|[s.width,s.height]),
+            "source_aspect":source.map(|s|f64::from(s.width)/f64::from(s.height)),
+            "viewport_width":viewport.width,"viewport_height":viewport.height,
+            "viewport_aspect":if viewport.height>0 {Some(f64::from(viewport.width)/f64::from(viewport.height))}else{None},
+            "expected_left_pillarbox_px":sides,"expected_right_pillarbox_px":sides,
+            "padding_note":"Derived from measured HWND geometry and source ratio; not a pixel scan or proof of phone rendering.",
+            "client":[client.right,client.bottom],"outer":[outer.left,outer.top,outer.right,outer.bottom],
+            "toolbar_height":client.bottom-video.bottom,"ui_dpi":theme::dpi(self.window),
+            "rotation_quarters":self.rotation,"fullscreen":self.fullscreen.is_some(),"display":self.config.display
+        })
+    }
     fn main_action(&mut self, id: usize) {
         // SAFETY: Main action IDs refer to controls owned for the entire window lifetime.
         if let Ok(button) = unsafe { GetDlgItem(Some(self.window), id as i32) } {
@@ -188,6 +326,8 @@ impl Ui {
                     self.rotation,
                 ));
                 layout(self);
+                self.needs_autosize = self.config.display == DisplayChoice::Fit;
+                self.resize_to_phone(None);
             }
             CONTROL => {
                 let enabled = !self.config.control_enabled;
@@ -201,7 +341,7 @@ impl Ui {
                     .send(control::Command::Action(Input::Button(Button::Home)));
             }
             FULL => fullscreen(self),
-            SETTINGS => self.open_settings(0),
+            SETTINGS => self.open_settings(settings::GENERAL_PAGE),
             _ => {}
         }
     }
@@ -219,12 +359,13 @@ impl Ui {
             };
             let result = (|| -> windows::core::Result<usize> {
                 if self.overflow_actions.get() {
-                    let text = wide(if self.video.active {
+                    let text = wide(i18n::tr(if self.video.active {
                         "Disconnect"
                     } else {
                         "Connect"
-                    });
+                    }));
                     AppendMenuW(menu, MF_STRING, CONNECT, PCWSTR(text.as_ptr()))?;
+                    let rotate = wide(i18n::tr("Rotate"));
                     AppendMenuW(
                         menu,
                         if self.video.status.state == 4 {
@@ -233,11 +374,39 @@ impl Ui {
                             MF_STRING | MF_GRAYED
                         },
                         ROTATE,
-                        w!("Rotate"),
+                        PCWSTR(rotate.as_ptr()),
                     )?;
                 }
+                for (button, id, title) in [
+                    (self.control_button, CONTROL, "Control"),
+                    (
+                        self.full,
+                        FULL,
+                        if self.fullscreen.is_some() {
+                            "Exit fullscreen"
+                        } else {
+                            "Fullscreen"
+                        },
+                    ),
+                    (self.settings_button, SETTINGS, "Settings"),
+                ] {
+                    if !IsWindowVisible(button).as_bool() {
+                        let text = wide(i18n::tr(title));
+                        AppendMenuW(
+                            menu,
+                            if IsWindowEnabled(button).as_bool() {
+                                MF_STRING
+                            } else {
+                                MF_STRING | MF_GRAYED
+                            },
+                            id,
+                            PCWSTR(text.as_ptr()),
+                        )?;
+                    }
+                }
                 if self.control.capabilities().home && self.input.geometry.is_some() {
-                    AppendMenuW(menu, MF_STRING, HOME, w!("Home"))?;
+                    let home = wide(i18n::tr("Home"));
+                    AppendMenuW(menu, MF_STRING, HOME, PCWSTR(home.as_ptr()))?;
                 }
                 let mut rect = RECT::default();
                 GetWindowRect(self.more, &mut rect)?;
@@ -287,11 +456,11 @@ impl Ui {
     }
     fn persist(&self) {
         if let Err(error) = crate::settings::save(&self.config) {
-            self.error(&format!("Could not save settings: {error}"));
+            self.error(&format!("{}: {error}", i18n::tr("Could not save settings")));
         }
     }
     fn error(&self, text: &str) {
-        let text = wide(text); // SAFETY: UI-owned modal error box, copied UTF-16 strings.
+        let text = wide(i18n::tr(text)); // SAFETY: UI-owned modal error box, copied UTF-16 strings.
         unsafe {
             MessageBoxW(
                 Some(self.window),
@@ -361,7 +530,9 @@ impl Ui {
         );
         let status_changed = label_changed(
             self.status_label,
-            if self.video.status.state == 4 {
+            i18n::tr(if self.layout_fixture.is_some() {
+                "Layout test — no phone video"
+            } else if self.video.status.state == 4 {
                 "Connected"
             } else if self.video.active {
                 "Connecting…"
@@ -369,7 +540,7 @@ impl Ui {
                 "Connection unavailable — open Settings"
             } else {
                 "Not connected"
-            },
+            }),
         );
         label(
             self.connect,
@@ -496,11 +667,14 @@ impl Ui {
         if home != self.last_home {
             self.last_home = home;
             layout(self);
+            self.needs_autosize = self.config.display == DisplayChoice::Fit;
         }
         if let Some(panel) = &mut self.diagnostics {
             panel.update(&self.input);
         }
         if let Ok(video) = self.worker.snapshots.try_recv() {
+            let was_live = self.video.status.state == 4;
+            let format_changed = (video.status.width, video.status.height) != self.last_geometry;
             if self.video.active && !video.active {
                 self.control.release();
             }
@@ -514,12 +688,27 @@ impl Ui {
                 self.control.send(control::Command::RefreshGeometry);
                 layout(self);
             }
+            if self.video.status.state == 4
+                && (!was_live || format_changed)
+                && self.config.display == DisplayChoice::Fit
+            {
+                self.needs_autosize = true;
+            }
         }
         self.refresh_labels();
+        if self.needs_autosize {
+            self.resize_to_phone(None);
+        }
         if let Some(panel) = &mut self.settings {
             panel.update(&self.config, &self.input, &self.video.devices);
         }
         if self.smoke && self.started.elapsed().as_millis() > 1500 {
+            if self.layout_fixture.is_some() {
+                println!(
+                    "Window layout: {}",
+                    serde_json::json!({"before":self.window_baseline,"after":self.window_report()})
+                );
+            }
             if let Some(panel) = &self.settings
                 && let Err(error) = panel.validate_navigation()
             {
@@ -547,6 +736,17 @@ impl Ui {
     fn settings_action(&mut self, id: usize, value: isize) {
         let mut configure = false;
         match id {
+            settings::LANGUAGE_EN | settings::LANGUAGE_VI => {
+                self.config.language = if id == settings::LANGUAGE_VI {
+                    Language::Vietnamese
+                } else {
+                    Language::English
+                };
+                i18n::set(self.config.language);
+                self.refresh_labels();
+                self.needs_autosize = self.config.display == DisplayChoice::Fit;
+                self.resize_to_phone(None);
+            }
             settings::AUTO | settings::USB | settings::WIRELESS => {
                 self.control.release();
                 self.config.connection = match id {
@@ -568,7 +768,7 @@ impl Ui {
             settings::RECEIVER => {
                 if let Some(panel) = &self.settings {
                     let name = panel.receiver_name();
-                    if !name.trim().is_empty() {
+                    if !name.trim().is_empty() && name != self.config.receiver_name {
                         self.config.receiver_name = name;
                         configure = true;
                     }
@@ -603,6 +803,8 @@ impl Ui {
                 self.config.one_to_one = self.config.display == DisplayChoice::OneToOne;
                 configure = true;
                 layout(self);
+                self.needs_autosize = self.config.display == DisplayChoice::Fit;
+                self.resize_to_phone(None);
             }
             settings::VSYNC => {
                 self.config.vsync = value != 0;
@@ -631,8 +833,14 @@ impl Ui {
                 );
                 report["connection_preference"] = serde_json::json!(self.config.connection);
                 report["ui_input"] = crate::ui_input::snapshot();
+                report["language"] = serde_json::json!(self.config.language);
+                report["window"] = self.window_report();
+                report["window_before_first_autosize"] = serde_json::json!(self.window_baseline);
                 if let Err(error) = crate::diagnostics::copy(self.window, &report) {
-                    self.error(&format!("Could not copy diagnostics: {error}"));
+                    self.error(&format!(
+                        "{}: {error}",
+                        i18n::tr("Could not copy diagnostics")
+                    ));
                 }
                 return;
             }
@@ -666,7 +874,38 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-    let config = crate::settings::load()?;
+    let mut config = crate::settings::load()?;
+    let args: Vec<_> = std::env::args().collect();
+    if smoke && let Some(index) = args.iter().position(|a| a == "--ui-test-language") {
+        config.language = if args.get(index + 1).is_some_and(|s| s == "vi") {
+            Language::Vietnamese
+        } else {
+            Language::English
+        };
+    }
+    i18n::set(config.language);
+    if smoke && let Some(index) = args.iter().position(|a| a == "--ui-test-display") {
+        config.display = match args.get(index + 1).map(String::as_str) {
+            Some("one") => DisplayChoice::OneToOne,
+            Some("fill") => DisplayChoice::Fill,
+            _ => DisplayChoice::Fit,
+        };
+    }
+    let layout_fixture = if smoke {
+        args.iter()
+            .position(|a| a == "--ui-test-source")
+            .and_then(|index| args.get(index + 1))
+            .and_then(|s| s.split_once('x'))
+            .and_then(|(w, h)| {
+                Some(Extent {
+                    width: w.parse().ok()?,
+                    height: h.parse().ok()?,
+                })
+            })
+            .filter(|s| (1..=16384).contains(&s.width) && (1..=16384).contains(&s.height))
+    } else {
+        None
+    };
     let state = Box::new(RefCell::new(Ui {
         window: HWND::default(),
         host: HWND::default(),
@@ -703,6 +942,11 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         last_geometry: (0, 0),
         last_home: false,
         recent_errors: std::collections::VecDeque::new(),
+        sizing: false,
+        needs_autosize: layout_fixture.is_some(),
+        window_baseline: None,
+        layout_fixture,
+        last_monitor: None,
     }));
     // SAFETY: All HWND creation/dispatch stays on this thread; state allocation is stable until worker shutdown and window destruction.
     unsafe {
@@ -784,7 +1028,7 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
                     style: WINDOW_STYLE,
                     parent: HWND|
          -> windows::core::Result<HWND> {
-            let text = wide(title);
+            let text = wide(i18n::tr(title));
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class,
@@ -875,6 +1119,9 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         appearance.text_style(state.borrow().status_label, 2);
         layout(&state.borrow());
         state.borrow().refresh_labels();
+        if state.borrow().layout_fixture.is_some() {
+            state.borrow_mut().resize_to_phone(None);
+        }
         SetTimer(Some(window), 1, 200, None);
         let _ = ShowWindow(window, if smoke { SW_HIDE } else { SW_SHOWNORMAL });
         if smoke && std::env::args().any(|a| a == "--ui-snapshot") {
@@ -892,6 +1139,12 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
         if smoke {
             let args: Vec<_> = std::env::args().collect();
+            if args.iter().any(|a| a == "--ui-test-fullscreen") {
+                fullscreen(&mut state.borrow_mut());
+            }
+            if args.iter().any(|a| a == "--ui-test-rotate") {
+                state.borrow_mut().main_action(ROTATE);
+            }
             if let Some(index) = args.iter().position(|a| a == "--ui-test-focus")
                 && let Some(mode) = args.get(index + 1)
             {
@@ -902,6 +1155,15 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
                 && let Some(page) = args.get(index + 1).and_then(|p| p.parse::<usize>().ok())
             {
                 state.borrow_mut().open_settings(page);
+            }
+            if args.iter().any(|a| a == "--ui-test-switch-language") {
+                let mut ui = state.borrow_mut();
+                let target = if ui.config.language == Language::English {
+                    settings::LANGUAGE_VI
+                } else {
+                    settings::LANGUAGE_EN
+                };
+                ui.settings_action(target, 1);
             }
         }
         let mut message = MSG::default();
@@ -948,6 +1210,33 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+fn monitor_key(rect: RECT) -> (i32, i32, i32, i32) {
+    (rect.left, rect.top, rect.right, rect.bottom)
+}
+fn toolbar_measurements(ui: &Ui) -> (i32, i32) {
+    let appearance = theme::current(ui.window);
+    // SAFETY: Read text from owned labels and measure using their retained fonts.
+    unsafe {
+        let measure = |window: HWND, font: HFONT| {
+            let mut text = [0u16; 256];
+            let n = GetWindowTextW(window, &mut text).max(0) as usize;
+            let dc = GetDC(Some(ui.window));
+            if dc.0.is_null() {
+                return appearance.px(80);
+            }
+            let old = SelectObject(dc, font.into());
+            let mut size = windows::Win32::Foundation::SIZE::default();
+            let _ = GetTextExtentPoint32W(dc, &text[..n], &mut size);
+            SelectObject(dc, old);
+            ReleaseDC(Some(ui.window), dc);
+            size.cx
+        };
+        (
+            measure(ui.device_label, appearance.strong),
+            measure(ui.status_label, appearance.small),
+        )
+    }
+}
 fn layout(ui: &Ui) {
     if ui.preview.0.is_null() {
         return;
@@ -962,34 +1251,19 @@ fn layout(ui: &Ui) {
         }
         let width = bounds.right;
         let height = bounds.bottom;
-        let measure = |window: HWND, font: HFONT| {
-            let mut text = [0u16; 256];
-            let n = GetWindowTextW(window, &mut text).max(0) as usize;
-            let dc = GetDC(Some(ui.window));
-            if dc.0.is_null() {
-                return px(80);
-            }
-            let old = SelectObject(dc, font.into());
-            let mut size = windows::Win32::Foundation::SIZE::default();
-            let _ = GetTextExtentPoint32W(dc, &text[..n], &mut size);
-            SelectObject(dc, old);
-            ReleaseDC(Some(ui.window), dc);
-            size.cx
-        };
-        let device_width = measure(ui.device_label, appearance.strong);
-        let status_width = measure(ui.status_label, appearance.small);
+        let (device_width, status_width) = toolbar_measurements(ui);
         let home = ui.control.capabilities().home && ui.input.geometry.is_some();
         let bar = toolbar::layout(width, appearance.dpi, device_width, status_width, home);
-        ui.overflow_actions.set(bar.overflow);
+        ui.overflow_actions.set(!bar.visible[0] || !bar.visible[1]);
         let top = bar.height;
         let mut action_x = bar.actions_left;
         for (button, visible) in [
             (ui.more, bar.more),
-            (ui.connect, !bar.overflow),
-            (ui.rotate, !bar.overflow),
-            (ui.control_button, true),
-            (ui.full, true),
-            (ui.settings_button, true),
+            (ui.connect, bar.visible[0]),
+            (ui.rotate, bar.visible[1]),
+            (ui.control_button, bar.visible[2]),
+            (ui.full, bar.visible[3]),
+            (ui.settings_button, bar.visible[4]),
         ] {
             let _ = ShowWindow(button, if visible { SW_SHOWNA } else { SW_HIDE });
             if visible {
@@ -1004,6 +1278,15 @@ fn layout(ui: &Ui) {
                 action_x += bar.button + bar.gap;
             }
         }
+        let text_visible = bar.text_width >= px(24);
+        let _ = ShowWindow(
+            ui.device_label,
+            if text_visible { SW_SHOWNA } else { SW_HIDE },
+        );
+        let _ = ShowWindow(
+            ui.status_label,
+            if text_visible { SW_SHOWNA } else { SW_HIDE },
+        );
         if bar.stacked {
             let _ = MoveWindow(
                 ui.device_label,
@@ -1183,6 +1466,21 @@ fn fullscreen(ui: &mut Ui) {
     ui.control.release(); // SAFETY: Save/restore the owned window's style and rectangle; video renderer remains attached unchanged.
     unsafe {
         if let Some(rect) = ui.fullscreen.take() {
+            let rect = if let Ok(monitor) = window_layout::monitor(ui.window, None) {
+                window_layout::place(
+                    Extent {
+                        width: (rect.right - rect.left)
+                            .min(monitor.rcWork.right - monitor.rcWork.left),
+                        height: (rect.bottom - rect.top)
+                            .min(monitor.rcWork.bottom - monitor.rcWork.top),
+                    },
+                    rect.left,
+                    rect.top,
+                    monitor.rcWork,
+                )
+            } else {
+                rect
+            };
             SetWindowLongPtrW(
                 ui.window,
                 GWL_STYLE,
@@ -1197,6 +1495,8 @@ fn fullscreen(ui: &mut Ui) {
                 rect.bottom - rect.top,
                 SWP_FRAMECHANGED | SWP_NOZORDER,
             );
+            ui.needs_autosize = ui.config.display == DisplayChoice::Fit;
+            ui.resize_to_phone(None);
         } else {
             let mut rect = RECT::default();
             if GetWindowRect(ui.window, &mut rect).is_err() {
@@ -1294,6 +1594,69 @@ unsafe extern "system" fn window_proc(
                 WM_SIZE => {
                     ui.control.release();
                     layout(&ui);
+                    if wparam.0 == SIZE_RESTORED as usize
+                        && !ui.sizing
+                        && ui.fullscreen.is_none()
+                        && ui.config.display == DisplayChoice::Fit
+                        && !IsZoomed(window).as_bool()
+                        && let Some(source) = ui.source_size()
+                    {
+                        let mut viewport = RECT::default();
+                        if GetClientRect(ui.preview, &mut viewport).is_ok()
+                            && (f64::from(viewport.right)
+                                - f64::from(viewport.bottom) * f64::from(source.width)
+                                    / f64::from(source.height))
+                            .abs()
+                                > 1.0
+                        {
+                            ui.needs_autosize = true;
+                        }
+                    }
+                    if wparam.0 == SIZE_RESTORED as usize && ui.needs_autosize {
+                        ui.resize_to_phone(None);
+                    }
+                    return LRESULT(0);
+                }
+                WM_ENTERSIZEMOVE => {
+                    ui.sizing = true;
+                    return LRESULT(0);
+                }
+                WM_EXITSIZEMOVE => {
+                    ui.sizing = false;
+                    if let Ok(monitor) = window_layout::monitor(window, None) {
+                        let mut rect = RECT::default();
+                        let outside = GetWindowRect(window, &mut rect).is_ok()
+                            && (rect.left < monitor.rcWork.left
+                                || rect.top < monitor.rcWork.top
+                                || rect.right > monitor.rcWork.right
+                                || rect.bottom > monitor.rcWork.bottom);
+                        if ui.last_monitor != Some(monitor_key(monitor.rcWork)) || outside {
+                            ui.needs_autosize = ui.config.display == DisplayChoice::Fit;
+                        }
+                    }
+                    if ui.needs_autosize {
+                        ui.resize_to_phone(None);
+                    }
+                    return LRESULT(0);
+                }
+                WM_SIZING if ui.config.display == DisplayChoice::Fit && ui.fullscreen.is_none() => {
+                    if let Some(source) = ui.source_size()
+                        && let (Ok(chrome), Ok(monitor)) =
+                            (ui.chrome(), window_layout::monitor(window, None))
+                        && let Some(rect) = chrome.constrain(
+                            source,
+                            *(lparam.0 as *const RECT),
+                            wparam.0 as u32,
+                            monitor.rcWork,
+                        )
+                    {
+                        *(lparam.0 as *mut RECT) = rect;
+                        return LRESULT(1);
+                    }
+                }
+                WM_DISPLAYCHANGE => {
+                    ui.needs_autosize = ui.config.display == DisplayChoice::Fit;
+                    ui.resize_to_phone(None);
                     return LRESULT(0);
                 }
                 WM_ACTIVATEAPP if wparam.0 == 0 => {
@@ -1347,6 +1710,10 @@ unsafe extern "system" fn window_proc(
                     ui.control.release();
                     theme::refresh(window);
                     let rect = &*(lparam.0 as *const RECT);
+                    ui.needs_autosize = ui.config.display == DisplayChoice::Fit;
+                    if ui.resize_to_phone(Some(rect)) {
+                        return LRESULT(0);
+                    }
                     let _ = SetWindowPos(
                         window,
                         None,
@@ -1362,8 +1729,19 @@ unsafe extern "system" fn window_proc(
                 WM_GETMINMAXINFO => {
                     let info = &mut *(lparam.0 as *mut MINMAXINFO);
                     let appearance = theme::current(window);
-                    info.ptMinTrackSize.x = appearance.px(240);
-                    info.ptMinTrackSize.y = appearance.px(240);
+                    if ui.config.display == DisplayChoice::Fit
+                        && ui.fullscreen.is_none()
+                        && let Some(source) = ui.source_size()
+                        && let (Ok(chrome), Ok(monitor)) =
+                            (ui.chrome(), window_layout::monitor(window, None))
+                        && let Some(minimum) = chrome.minimum(source, monitor.rcWork)
+                    {
+                        info.ptMinTrackSize.x = minimum.outer.width;
+                        info.ptMinTrackSize.y = minimum.outer.height;
+                    } else {
+                        info.ptMinTrackSize.x = appearance.px(240);
+                        info.ptMinTrackSize.y = appearance.px(240);
+                    }
                     return LRESULT(0);
                 }
                 WM_CLOSE => {

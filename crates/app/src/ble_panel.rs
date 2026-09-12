@@ -44,6 +44,7 @@ pub struct BlePanel {
     buttons: [HWND; 4],
     clients: Vec<String>,
     last_text: String,
+    language: Option<imirror_device::Language>,
 }
 impl BlePanel {
     pub fn create(owner: HWND) -> windows::core::Result<Self> {
@@ -88,7 +89,7 @@ impl BlePanel {
                 let speed_label = CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
                     w!("STATIC"),
-                    w!("Mouse speed: 25%"),
+                    w!("Mouse speed: loading..."),
                     WS_CHILD | WS_VISIBLE,
                     8,
                     8,
@@ -215,6 +216,7 @@ impl BlePanel {
                     buttons,
                     clients: Vec::new(),
                     last_text: String::new(),
+                    language: None,
                 })
             })();
             if result.is_err() {
@@ -234,6 +236,27 @@ impl BlePanel {
         }
     }
     pub fn update(&mut self, input: &Snapshot) {
+        let language = crate::i18n::language();
+        if self.language != Some(language) {
+            self.language = Some(language);
+            // SAFETY: Update only this diagnostic window's title/buttons. Protocol
+            // names, peer data and raw driver errors remain technical text.
+            unsafe {
+                let title = wide(&format!(
+                    "iMirror — {}",
+                    crate::i18n::tr("Advanced Diagnostics")
+                ));
+                let _ = SetWindowTextW(self.window, PCWSTR(title.as_ptr()));
+                for (button, name) in
+                    self.buttons
+                        .iter()
+                        .zip(["Move Right", "Move Left", "Left Click", "Type A"])
+                {
+                    let caption = wide(crate::i18n::tr(name));
+                    let _ = SetWindowTextW(*button, PCWSTR(caption.as_ptr()));
+                }
+            }
+        }
         let d = &input.ble;
         let percent =
             if (MIN_POINTER_SPEED..=MAX_POINTER_SPEED).contains(&input.pointer_speed_percent) {
@@ -339,7 +362,7 @@ impl BlePanel {
                     Some(WPARAM(1)),
                     Some(LPARAM(percent as isize)),
                 );
-                let caption = wide(&format!("Mouse speed: {percent}%"));
+                let caption = wide(&format!("{}: {percent}%", crate::i18n::tr("Mouse speed")));
                 let _ = SetWindowTextW(self.speed_label, PCWSTR(caption.as_ptr()));
             }
             if text != self.last_text {
@@ -481,7 +504,8 @@ unsafe extern "system" fn panel_proc(
                         .0
                         .clamp(MIN_POINTER_SPEED as isize, MAX_POINTER_SPEED as isize);
                     if let Ok(label) = GetDlgItem(Some(hwnd), SPEED_LABEL) {
-                        let caption = wide(&format!("Mouse speed: {percent}%"));
+                        let caption =
+                            wide(&format!("{}: {percent}%", crate::i18n::tr("Mouse speed")));
                         let _ = SetWindowTextW(label, PCWSTR(caption.as_ptr()));
                     }
                     let owner = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut c_void);
