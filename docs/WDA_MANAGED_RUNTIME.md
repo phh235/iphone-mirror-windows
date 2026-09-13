@@ -117,3 +117,14 @@ physical display response.
 Still untested: phone/PC reboot, fresh driver or developer-image setup, signing
 expiry/renewal, sustained cable-loss recovery, WDA drag/typing and a clean-Windows
 installer. This is an unsigned engineering candidate, not a public release.
+
+### Subsequent failure under investigation
+
+After the successful reopen test, the user reported another non-working click
+sequence. The bounded history contains a completed tap followed by a WDA request
+failure; new sessions then reset their counters to zero. The earlier PASS remains
+evidence for that particular test, not proof of reliable operation. A separate
+`dist/wda-click-trace-20260913` candidate retains click-path and failed-session
+evidence. The user subsequently confirmed a working physical Calculator click
+on that candidate, while reporting substantial delay. Sustained reliability is
+still unvalidated; see the engineering log.

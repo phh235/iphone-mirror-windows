@@ -358,6 +358,29 @@ impl BlePanel {
             input.performance,
             text
         );
+        let text = if input.wda_runtime.is_some() || input.mode == 2 {
+            format!(
+                "Advanced WDA control ready: {}\r\n{}\r\nCurrent error: {}\r\n\r\nBLE is not the selected backend. Its subscription and speed fields do not apply.\r\n\r\nWDA session: {}\r\n\r\nLast failed operation (retained across sessions): {}\r\n\r\nClick path: {}\r\n\r\nRuntime: {}",
+                input.ready,
+                input.message,
+                input.ble_error.as_deref().unwrap_or("none"),
+                input
+                    .wda_metrics
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null),
+                input
+                    .wda_last_failure
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null),
+                crate::wda_input_trace::snapshot(),
+                input
+                    .wda_runtime
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null)
+            )
+        } else {
+            text
+        };
         // SAFETY: HWNDs are retained by this panel; Win32 copies strings synchronously.
         unsafe {
             let _ = EnableWindow(self.speed, true);

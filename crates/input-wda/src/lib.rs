@@ -45,6 +45,7 @@ pub struct Wda {
     tap_failures: u64,
     tap_durations: VecDeque<Duration>,
     last_geometry_request: Option<Duration>,
+    last_error_category: Option<&'static str>,
     pub last_request: Option<Duration>,
 }
 fn endpoint(text: &str) -> Result<Url, WdaError> {
@@ -90,6 +91,7 @@ impl Wda {
             tap_failures: 0,
             tap_durations: VecDeque::with_capacity(64),
             last_geometry_request: None,
+            last_error_category: None,
             last_request: None,
         })
     }
@@ -112,6 +114,17 @@ impl Wda {
         if result.is_err() {
             self.geometry_cache = None;
         }
+        self.last_error_category = result.as_ref().err().map(|error| match error {
+            WdaError::Connection(error) if error.is_timeout() => {
+                "timeout; outcome of input may be unknown"
+            }
+            WdaError::Connection(error) if error.is_connect() => "loopback connection failed",
+            WdaError::Connection(_) => "HTTP transport failed",
+            WdaError::SessionExpired => "session expired",
+            WdaError::Read(_) => "response read failed",
+            WdaError::Rejected(_) => "server rejected request",
+            _ => "invalid response or request",
+        });
         result
     }
     fn request_inner(
@@ -226,6 +239,7 @@ impl Wda {
         json!({"requests":self.requests,"geometry_requests":self.geometry_requests,
             "tap_requests":self.tap_requests,"tap_failures":self.tap_failures,
             "geometry_cached":self.geometry_cache.is_some(),
+            "last_error_category":self.last_error_category,
             "last_http_ms":self.last_request.map(|d|d.as_secs_f64()*1000.0),
             "last_geometry_request_ms":self.last_geometry_request.map(|d|d.as_secs_f64()*1000.0),
             "tap_dispatch":{"samples":samples.len(),"window_limit":64,

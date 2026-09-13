@@ -18,6 +18,7 @@ mod toolbar;
 mod ui;
 mod ui_input;
 mod ui_snapshot;
+mod wda_input_trace;
 mod window_layout;
 mod worker;
 use imirror_native_core::Engine;

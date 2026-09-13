@@ -67,6 +67,7 @@ pub struct Snapshot {
     pub diagnostics_error: Option<String>,
     pub wda_metrics: Option<serde_json::Value>,
     pub wda_runtime: Option<serde_json::Value>,
+    pub wda_last_failure: Option<serde_json::Value>,
 }
 pub struct ControlManager {
     commands: Sender<Command>,
@@ -132,6 +133,9 @@ impl ControlManager {
                 }
                 while let Ok(command)=incoming.try_recv(){
                     if stopping.load(Ordering::Acquire){break;}
+                    let operation=match &command{Command::Action(Input::Tap(_))=>"tap",Command::Action(Input::Swipe{..})=>"swipe",Command::Action(Input::Text(_))=>"text",Command::Action(_)=>"button/release",Command::RefreshGeometry=>"geometry",_=>"setup"};
+                    let action=matches!(&command,Command::Action(_));
+                    if action{crate::wda_input_trace::record("dispatch",operation,None);}
                     let result=(||->Result<(),String>{match command{
                         Command::BleStart=>{
                             if let Some(error)=&initial_error{return Err(error.clone());}
@@ -161,7 +165,13 @@ impl ControlManager {
                         },
                         Command::Action(action)=>{if !input.ready.load(Ordering::Acquire){return Err("Advanced control is not ready. The queued action was not sent.".into());}wda.as_mut().ok_or("Advanced control is not connected")?.dispatch(action).map_err(|e|e.to_string())?;}
                     }Ok(())})();
-                    if let Err(error)=result{if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;if managed.is_some(){wda=None;}}snapshot.message=error.clone();snapshot.ble_error=Some(error);}
+                    if let Err(error)=result{
+                        if action || wda.is_some(){
+                            crate::wda_input_trace::record("failed",operation,None);
+                            snapshot.wda_last_failure=Some(serde_json::json!({"at_ns":now_ns(),"operation":operation,"error":error,"session_metrics":wda.as_ref().map(Wda::diagnostics)}));
+                        }
+                        if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;if managed.is_some(){wda=None;}}snapshot.message=error.clone();snapshot.ble_error=Some(error);
+                    }else if action{crate::wda_input_trace::record("completed",operation,None);}
                 }
                 if stopping.load(Ordering::Acquire){break;}
                 if let Some(runtime)=&managed{
@@ -174,7 +184,7 @@ impl ControlManager {
                             let current=runtime.status();if !current.ready || current.generation!=state.generation{return Err("WDA restarted while connecting. Retrying.".into());}
                             Ok((client,size))
                         })();
-                        match result{Ok((client,size))=>{wda=Some(client);wda_epoch=state.generation;snapshot.geometry=Some(size);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();},Err(error)=>{snapshot.ble_error=Some(error.clone());snapshot.message=error;}}
+                        match result{Ok((client,size))=>{crate::wda_input_trace::record("session_ready","New WDA session; click counters retained",None);wda=Some(client);wda_epoch=state.generation;snapshot.geometry=Some(size);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();},Err(error)=>{snapshot.ble_error=Some(error.clone());snapshot.message=error;}}
                     }
                     snapshot.wda_runtime=Some(runtime.diagnostics());
                 }else{snapshot.wda_runtime=None;}
@@ -239,7 +249,9 @@ impl ControlManager {
                     if outgoing.is_full(){let _=replace.try_recv();}let _=outgoing.try_send(snapshot.clone());let _=log_tx.try_send(snapshot.clone());
                 }
                 let mut wait=publish_at.saturating_duration_since(Instant::now()).min(Duration::from_millis(100));
-                if input.ready.load(Ordering::Acquire)&&input.has_pending(){wait=wait.min(Duration::from_nanos(next_movement.saturating_sub(now_ns()).max(1)));}
+                // Only a BLE service can consume this mailbox. WDA must not wake
+                // continuously for BLE neutral reports left by release().
+                if ble.is_some()&&input.ready.load(Ordering::Acquire)&&input.has_pending(){wait=wait.min(Duration::from_nanos(next_movement.saturating_sub(now_ns()).max(1)));}
                 if waiter.wait(wait).is_err(){input.release();break;}
             }
             input.release();input.ready.store(false,Ordering::Release);

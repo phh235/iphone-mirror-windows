@@ -778,6 +778,18 @@ impl Ui {
             self.input = input;
         }
         self.input.ready = self.control.is_ready();
+        if self.config.control == ControlChoice::Wda
+            && (!self.input.ready || self.control.backend() != Backend::Wda)
+        {
+            self.gesture.cancel();
+            if crate::ui_input::release_capture_if_owned(self.preview) {
+                crate::wda_input_trace::record(
+                    "cancelled",
+                    "WDA readiness lost; local capture released",
+                    None,
+                );
+            }
+        }
         for message in [
             self.input.ble_error.as_deref(),
             self.input.diagnostics_error.as_deref(),
@@ -967,6 +979,8 @@ impl Ui {
                 report["connection_preference"] = serde_json::json!(self.config.connection);
                 report["ui_input"] = crate::ui_input::snapshot();
                 report["language"] = serde_json::json!(self.config.language);
+                report["control_enabled"] = serde_json::json!(self.config.control_enabled);
+                report["control_choice"] = serde_json::json!(self.config.control);
                 report["window"] = self.window_report();
                 report["window_before_first_autosize"] = serde_json::json!(self.window_baseline);
                 if let Err(error) = crate::diagnostics::copy(self.window, &report) {
@@ -1548,6 +1562,15 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
     };
     // SAFETY: Input capture/focus geometry operations refer only to this UI's windows.
     unsafe {
+        if message == WM_CAPTURECHANGED {
+            // Ignore a delayed notification from our own previous release if a
+            // newer gesture has already acquired the preview's capture.
+            if GetCapture() != ui.preview {
+                ui.gesture.cancel();
+                crate::wda_input_trace::record("cancelled", "Preview capture changed", None);
+            }
+            return;
+        }
         if message == WM_KILLFOCUS || (message == WM_KEYDOWN && wparam.0 == 0x1b) {
             crate::ui_input::record(ui.preview, crate::ui_input::PREVIEW_FOCUS_LOST, 0);
             if message == WM_KILLFOCUS && GetFocus() == ui.preview {
@@ -1555,6 +1578,11 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
             }
             ui.control.release();
             ui.gesture.cancel();
+            crate::wda_input_trace::record(
+                "cancelled",
+                "Preview lost focus or Escape was pressed",
+                None,
+            );
             crate::ui_input::release_capture_if_owned(ui.preview);
             return;
         }
@@ -1567,7 +1595,24 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
             fullscreen(ui);
             return;
         }
-        if message == WM_LBUTTONDOWN && ui.config.control_enabled && ui.control.is_ready() {
+        if message == WM_LBUTTONDOWN && ui.config.control == ControlChoice::Wda {
+            crate::wda_input_trace::record("routed_down", "Preview client pixels", Some(point));
+            match wda_click_point(ui, point) {
+                Ok(mapped) => {
+                    crate::wda_input_trace::record(
+                        "mapped_down",
+                        "WDA device points",
+                        Some(mapped),
+                    );
+                    SetCapture(ui.preview);
+                    ui.gesture.press(Some(mapped), Instant::now());
+                }
+                Err(reason) => {
+                    ui.gesture.cancel();
+                    crate::wda_input_trace::record("rejected", reason, Some(point));
+                }
+            }
+        } else if message == WM_LBUTTONDOWN && ui.config.control_enabled && ui.control.is_ready() {
             if let Some(mapped) = map(ui, point) {
                 if ui.control.backend() == Backend::BluetoothMouse {
                     let mut rect = RECT::default();
@@ -1586,10 +1631,49 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
                     ui.gesture.press(Some(mapped), Instant::now());
                 }
             }
-        } else if message == WM_LBUTTONUP && ui.control.backend() == Backend::Wda {
-            if let Some(action) = ui.gesture.release(map(ui, point), Instant::now()) {
-                ui.control.send(control::Command::Action(action));
+        } else if message == WM_LBUTTONUP {
+            if ui.config.control == ControlChoice::Wda {
+                crate::wda_input_trace::record("routed_up", "Preview client pixels", Some(point));
+                match wda_click_point(ui, point) {
+                    Ok(mapped) => {
+                        crate::wda_input_trace::record(
+                            "mapped_up",
+                            "WDA device points",
+                            Some(mapped),
+                        );
+                        if let Some(action) = ui.gesture.release(Some(mapped), Instant::now()) {
+                            let kind = if matches!(action, Input::Tap(_)) {
+                                "tap"
+                            } else {
+                                "swipe"
+                            };
+                            if ui.control.send(control::Command::Action(action)) {
+                                crate::wda_input_trace::record("queued", kind, Some(mapped));
+                            } else {
+                                crate::wda_input_trace::record(
+                                    "rejected",
+                                    "WDA command queue is full or closed",
+                                    None,
+                                );
+                            }
+                        } else {
+                            crate::wda_input_trace::record(
+                                "rejected",
+                                "Mouse UP has no active WDA gesture",
+                                None,
+                            );
+                        }
+                    }
+                    Err(reason) => {
+                        ui.gesture.cancel();
+                        crate::wda_input_trace::record("rejected", reason, Some(point));
+                    }
+                }
+            } else {
+                ui.gesture.cancel();
             }
+            // Always return preview capture, even if WDA became unavailable
+            // between DOWN and UP. A native toolbar button's capture is untouched.
             crate::ui_input::release_capture_if_owned(ui.preview);
         } else if message == WM_CHAR
             && ui.control.backend() == Backend::Wda
@@ -1609,6 +1693,16 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
             ui.control.send(control::Command::Action(Input::Text(text)));
         }
     }
+}
+fn wda_click_point(ui: &Ui, point: Point) -> Result<Point, &'static str> {
+    crate::wda_input_trace::gate(
+        ui.config.control_enabled,
+        ui.control.backend() == Backend::Wda,
+        ui.control.is_ready(),
+        ui.video.status.state == 4,
+        ui.input.geometry.is_some(),
+    )?;
+    map(ui, point).ok_or("Click is outside the mapped video or viewport dimensions are invalid")
 }
 fn fullscreen(ui: &mut Ui) {
     ui.control.release(); // SAFETY: Save/restore the owned window's style and rectangle; video renderer remains attached unchanged.
@@ -1739,6 +1833,7 @@ unsafe extern "system" fn window_proc(
                     || message == settings::EVENT
                     || (WM_APP + WM_KEYFIRST..=WM_APP + WM_MOUSELAST).contains(&message)
                     || message == WM_APP + WM_KILLFOCUS
+                    || message == WM_APP + WM_CAPTURECHANGED
                 {
                     return LRESULT(0);
                 }
@@ -1746,6 +1841,7 @@ unsafe extern "system" fn window_proc(
             }
             if (WM_APP + WM_KEYFIRST..=WM_APP + WM_MOUSELAST).contains(&message)
                 || message == WM_APP + WM_KILLFOCUS
+                || message == WM_APP + WM_CAPTURECHANGED
             {
                 preview_input(&mut ui, message - WM_APP, wparam, lparam);
                 return LRESULT(0);
@@ -1928,10 +2024,21 @@ unsafe extern "system" fn preview_proc(
     unsafe {
         if matches!(
             message,
-            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_KEYDOWN | WM_CHAR | WM_KILLFOCUS
+            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_KEYDOWN | WM_CHAR | WM_KILLFOCUS | WM_CAPTURECHANGED
         ) {
             if message == WM_LBUTTONDOWN {
+                crate::wda_input_trace::record(
+                    "native_down",
+                    "WM_LBUTTONDOWN received by video HWND",
+                    None,
+                );
                 let _ = SetFocus(Some(window));
+            } else if message == WM_LBUTTONUP {
+                crate::wda_input_trace::record(
+                    "native_up",
+                    "WM_LBUTTONUP received by video HWND",
+                    None,
+                );
             }
             let root = GetAncestor(window, GA_ROOT);
             let _ = PostMessageW(Some(root), WM_APP + message, wparam, lparam);

@@ -948,3 +948,49 @@ failures, mean software dispatch 939.429 ms and median 851.103 ms. Conditions
 were uncontrolled; this does not establish a performance change versus the
 earlier approximately 0.6 s median. Runtime management is a reliability change,
 not a claim of faster XCTest input.
+
+## 2026-09-13 — intermittent WDA clicks after managed reopen
+
+The user subsequently reported live Wireless video but no working clicks. The
+pasted current-session metrics showed Ready and zero taps. Reading the bounded
+history for that same process established that one tap had completed earlier,
+then a WDA request failed at about 27 seconds. Later session recreation reset
+the visible request counters to zero. Thus zero current-session taps did not
+prove that no Windows click had ever been received. The failing operation's
+metrics were discarded when the client was dropped; the existing logs cannot
+identify the precise failure stage or phone-side outcome for that request.
+
+Added a bounded 32-event preview/WDA trace with process-lifetime counters and
+explicit readiness, video-format, geometry, map, enqueue and dispatch stages.
+Retain the failed client's metrics before dropping it and classify transport
+timeouts separately from connection failures. No typed text or phone identifiers
+are traced. WDA diagnostics now identify WDA rather than presenting inactive
+BLE subscription fields as its requirements. WDA gesture capture is released
+on readiness loss and on mouse-up even if the backend changed; native button
+capture remains protected. No coordinate transform or video code was changed.
+
+Also found that WDA's ready flag activated the BLE mailbox's high-frequency wait
+while two neutral BLE reports remained pending and no BLE service could consume
+them. Limited that wait to an existing BLE service, leaving BLE pacing unchanged.
+Two 20-second idle samples with WDA ready, hidden main window and no video/input
+measured average app CPU of 3.084% before and 0.539% after, expressed relative to
+one logical core. Peaks were 6.186% and 3.042%. This is a short app-only CPU check,
+not a total-system, physical-input latency or 30-minute stability result.
+Evidence: work/wda-setup/wda-idle-before.json and wda-idle-after.json.
+
+Fmt, strict all-target/all-feature Clippy, 69 Rust tests and release build passed
+using CARGO_TARGET_DIR=work/wda-click-build and locked offline dependencies. PE
+imports resolved. The new EXE is dist/wda-click-trace-20260913/iMirror.exe,
+3,340,288 bytes, SHA-256
+0b788e6e776a218353e774087a585985ae974cfaf9ad14f3392a857926ac0b22.
+All staged helper/DLL hashes match the previous accepted runtime. USB/AirPlay,
+native media, decoder, renderer, BLE and Raw Input sources are unchanged.
+The diagnostic candidate became WDA Ready, but its real click result is UNTESTED.
+Do not declare the intermittent click problem fixed before physical evidence.
+
+The user has now confirmed that the diagnostic candidate's Calculator click
+worked on the physical phone, and requested lower latency and smoother swipes.
+The captured click reached dispatch about 0.022 ms after native mouse-up;
+dispatch to completion took 1068.205 ms. This separates fast Windows queueing
+from the slow WDA call, and is one software-timestamped sample, not physical
+display latency. Preserve this candidate before further WDA optimization.
