@@ -1042,3 +1042,98 @@ uncontrolled app-use sample, not the same controlled Calculator A/B test, and
 does not replace or generalize the 567-to-429 ms comparison. Object dragging,
 long presses, rotation/reconnect, sustained stability and clean-machine packaging
 remain unvalidated for this candidate.
+
+## 2026-09-13 — isolated USB pacing / WDA measurement experiments
+
+Work remains on experiment/performance-20260913, based on bfa4784. The stable
+checkpoint and dist/wda-fast-input-20260913/iMirror.exe are not replaced. Full
+measurement definitions, all A/B/C tables, trade-offs and evidence paths are in
+PERFORMANCE_EXPERIMENTS_20260913.md. No main merge, stable tag or release upload.
+
+Added bounded native QPC hooks and offline PresentMon correlation. Actual display
+counts deduplicate source PTS and exclude unsuccessful/dropped presentations.
+Profile found readback Map dominated the current decoder wall time. M1 shared
+GPU handoff reduced CPU but the controlled static repeat lost 177 decoded frames
+and worsened P99, so it is rejected standalone. M1b cached imports plus original
+DO_NOT_WAIT produced rapid retries (~3000/s) in smoke; stopped before benchmark.
+Cache use is gated by the separately measured blocking-Present experiment.
+
+M2 changes only Present flags to 0, preserving VSync and CPU output. M3 enables
+GPU handoff/cache using exactly M2's executable. M3 fast-scroll P99 was 34.677 ms
+versus original 50.072 ms, 1% low 22.661 versus 18.875, CPU .738% versus 1.752%.
+These sequential human-scroll runs have different source timing. Static M3
+still loses 45 outputs and has P99 75.124 ms, so it is retained only as an opt-in
+experiment, not a proven global/stable win. No encoded queue/quality/timestamp
+policy changed. The GPU route still performs one GPU copy; not literal zero-copy.
+USB-only opt-in, adapter validation and sticky CPU fallback protect wireless.
+
+User confirmed the scoped candidate's USB live image, colors, rotation,
+fullscreen, resize, minimize/restore and button reconnect were normal. Their
+subsequent no-device event was confirmed to be an unplugged cable. New final
+BLE/keyboard/Raw Input, cable reconnect and fault-injected GPU fallback tests
+are still pending. Do not reuse an older build's hardware PASS for final output.
+
+WDA production contact remains 50 ms. Added matched mouse/enqueue/dequeue/HTTP
+timestamps and a feature-gated Calculator fixture; the fixture adopts the
+existing GUI session and never recreates it or retries ambiguous input. A
+fixed-size native result-ROI observer is enabled only via the explicit local
+lab environment. HTTP success alone does not count as a real Calculator PASS.
+
+Attempt wda-taps-004 stopped after 214 primary taps: 213 verified results, one
+unknown after a verification GET connection interruption. Windows System log
+shows Modern Standby during the run; ETW visual coverage is insufficient. Its
+report is marked invalid for acceptance, never padded to 100 samples/contact.
+Added benchmark-only idle-sleep/display inhibition and viewport validity checks.
+No power plan or normal app startup behavior was changed. Attempts 005/006 then
+stopped before scored taps because the GUI live-video gate was false despite
+user-reported Wireless live and WDA Ready. Native logs show wireless queue
+recovery; requested current GUI diagnostics instead of bypassing the gate.
+
+The awake GUI lab passed fmt, strict Clippy, 75 default Rust tests and release
+build. EXE: dist/imirror-performance-experimental-20260913/wda-awake-lab/iMirror.exe,
+SHA256 f2ac493e52810469c93f7ced1436795972ae2699a5be1b7176dc0695ffde34ad.
+The latest probe-only start-gate addition was also compiled in release; final
+all-feature tests/checks will be rerun after measurement work. No transport,
+XCTest wait, continuous-touch, queue or production tap optimization has been
+accepted from these incomplete WDA measurements. No Mac/Xcode is locally
+available; no custom runner build or remote CI job was started.
+
+The user's subsequent current GUI snapshot proved PID 20760 was live at
+664x1440, 57.535 source FPS, WDA Ready. A fresh local arm passed the video gate;
+its old reference differed. A no-input phone inspection then found Calculator
+was not foreground. Activated only Calculator through the existing WDA session,
+without recreating it, before a fresh fixture. Attempt 007 verified 163 taps;
+162 had changed result-ROI frames displayed by ETW. Wireless then hit its existing
+16-packet limit and entered keyframe recovery. No Modern Standby in this run.
+No queue or wireless recovery change was made to hide the failure.
+
+Attempt 008 completed 400 primary taps, 100 each at 50/30/20/10 ms, all real
+Calculator outcomes PASS, no unknown/missed/wrong results. It intentionally
+measured HTTP/state only after wireless recovery, not healthy-mirror latency.
+50 -> 10 ms contact: HTTP mean 419.438 -> 415.016 ms, P50 394.516 -> 392.042,
+P95 535.136 -> 533.208, P99 620.604 -> 545.200. This is a small median gain,
+not <300 ms HTTP. Separate earlier visual means were 323.167 -> 294.887 ms,
+with only 41/40 observations, below the 100-per-contact visual gate.
+
+Integrated T10 only behind IMIRROR_EXPERIMENT_WDA_SHORT_TAP=1 at the app's WDA
+factory. Ordinary constructors stay at 50 ms; native fallback and complete
+DOWN/UP behavior remain. Extended existing loopback tests to validate complete
+50/10 ms bodies and native fallback in both modes. No continuous swipe or new
+transport. Prepared an uncompiled pinned WDA runner timing patch separately in
+experiments/wda-timing; git apply --check and shell syntax pass, not an Xcode
+build or real-runner validation. No remote CI or signing/installation was done.
+
+Final fmt/strict Clippy/75 default tests/release passed; WDA all-feature tests
+also passed (19). Staged the exact EXE at
+dist/imirror-performance-experimental-20260913/iMirror.exe, 3,453,440 bytes,
+SHA256 0fa2692831b65fb09109287325826821bd1e75ae286b95bcb8dd22f30d4bfde4.
+PE inspection covered 83 binaries and found all imports in intended private
+paths or Windows System32/API sets; other runtime binary hashes match stable.
+This does not replace clean-machine or dynamic-plugin validation. Three process-
+scoped launchers select baseline, USB M3 or WDA T10; no automatic test is launched.
+The new EXE is unsigned and has not replaced the currently open lab GUI.
+
+Local code commits: c17b5b0 (USB/GPU/pacing), eee5b9e (WDA timing/T10). Stable
+checkpoint still resolves to bfa4784; stable EXE hash still c577805d...db0.
+No push/main merge/tag/release. Exact final manual smoke, wireless recovery,
+continuous touch, fault fallback and long-run/clean-machine gates remain open.

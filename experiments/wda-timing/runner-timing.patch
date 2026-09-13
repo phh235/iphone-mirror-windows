@@ -1,0 +1,190 @@
+diff --git a/WebDriverAgentLib/Categories/XCUIApplication+FBTouchAction.m b/WebDriverAgentLib/Categories/XCUIApplication+FBTouchAction.m
+index f6197b7..c7bd83d 100644
+--- a/WebDriverAgentLib/Categories/XCUIApplication+FBTouchAction.m
++++ b/WebDriverAgentLib/Categories/XCUIApplication+FBTouchAction.m
+@@ -8,6 +8,7 @@
+ 
+ 
+ #import "XCUIApplication+FBTouchAction.h"
++#import "../Utilities/IMInputTiming.h"
+ 
+ #import "FBBaseActionsSynthesizer.h"
+ #import "FBConfiguration.h"
+@@ -37,14 +38,18 @@
+                                 elementCache:(FBElementCache *)elementCache
+                                        error:(NSError **)error
+ {
++  IMInputTiming *timing = IMCurrentInputTiming();
++  [timing mark:@"synthesizer_begin"];
+   FBBaseActionsSynthesizer *synthesizer = [[synthesizerType alloc] initWithActions:actions
+                                                                     forApplication:self
+                                                                       elementCache:elementCache
+                                                                              error:error];
++  [timing mark:@"synthesizer_ready"];
+   if (nil == synthesizer) {
+     return NO;
+   }
+   XCSynthesizedEventRecord *eventRecord = [synthesizer synthesizeWithError:error];
++  [timing mark:@"event_record_ready"];
+   if (nil == eventRecord) {
+     return [self.class handleEventSynthesWithError:*error];
+   }
+@@ -61,7 +66,9 @@
+                                             error:error]) {
+     return NO;
+   }
++  [IMCurrentInputTiming() mark:@"cooloff_begin"];
+   [self fb_waitUntilStableWithTimeout:FBConfiguration.sharedInstance.animationCoolOffTimeout];
++  [IMCurrentInputTiming() mark:@"cooloff_complete"];
+   return YES;
+ }
+ 
+diff --git a/WebDriverAgentLib/Commands/FBTouchActionCommands.m b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+index 7788175..b7d2349 100644
+--- a/WebDriverAgentLib/Commands/FBTouchActionCommands.m
++++ b/WebDriverAgentLib/Commands/FBTouchActionCommands.m
+@@ -7,12 +7,52 @@
+  */
+ 
+ #import "FBTouchActionCommands.h"
++#import "../Utilities/IMInputTiming.h"
+ 
+ #import "FBRoute.h"
+ #import "FBRouteRequest.h"
+ #import "FBSession.h"
+ #import "XCUIApplication+FBTouchAction.h"
+ 
++static NSString *const IMTimingKey = @"iMirror.InputTiming";
++@implementation IMInputTiming {
++  NSLock *_lock;
++  NSMutableDictionary<NSString *, NSNumber *> *_marks;
++  NSTimeInterval _origin;
++}
++- (instancetype)init {
++  self = [super init];
++  if (self) {
++    _lock = [NSLock new];
++    _marks = [NSMutableDictionary new];
++    _origin = NSProcessInfo.processInfo.systemUptime;
++  }
++  return self;
++}
++- (void)mark:(NSString *)stage {
++  NSTimeInterval elapsed = (NSProcessInfo.processInfo.systemUptime - _origin) * 1000.0;
++  [_lock lock];
++  _marks[stage] = @(elapsed);
++  [_lock unlock];
++}
++- (NSDictionary *)snapshot {
++  [_lock lock];
++  NSDictionary *copy = _marks.copy;
++  [_lock unlock];
++  return copy;
++}
++@end
++IMInputTiming *IMCurrentInputTiming(void) {
++  return NSThread.currentThread.threadDictionary[IMTimingKey];
++}
++void IMSetInputTiming(IMInputTiming *timing) {
++  if (timing) {
++    NSThread.currentThread.threadDictionary[IMTimingKey] = timing;
++  } else {
++    [NSThread.currentThread.threadDictionary removeObjectForKey:IMTimingKey];
++  }
++}
++
+ @implementation FBTouchActionCommands
+ 
+ #pragma mark - <FBCommandHandler>
+@@ -22,11 +62,37 @@
+   return
+   @[
+     [[FBRoute POST:@"/actions"] respondWithTarget:self action:@selector(handlePerformW3CTouchActions:)],
++    [[FBRoute POST:@"/imirror/actions"] respondWithTarget:self action:@selector(handleTimedW3CActions:)],
+   ];
+ }
+ 
+ #pragma mark - Commands
+ 
+++ (id<FBResponsePayload>)handleTimedW3CActions:(FBRouteRequest *)request
++{
++  IMInputTiming *previous = IMCurrentInputTiming();
++  IMInputTiming *timing = [IMInputTiming new];
++  IMSetInputTiming(timing);
++  @try {
++    [timing mark:@"handler_start"];
++    XCUIApplication *application = request.session.activeApplication;
++    [timing mark:@"active_application_ready"];
++    NSArray *actions = (NSArray *)request.arguments[@"actions"];
++    NSError *error;
++    // Same validation/synthesizer/idle policy as the pinned standard route.
++    if (![application fb_performW3CActions:actions elementCache:request.session.elementCache error:&error]) {
++      return FBResponseWithUnknownError(error);
++    }
++    [timing mark:@"handler_complete"];
++    return FBResponseWithObject(@{
++      @"imirror_timing_ms": timing.snapshot,
++      @"scope": @"Handler-relative monotonic time. Excludes HTTP parsing before routing, response transmission and display latency."
++    });
++  } @finally {
++    IMSetInputTiming(previous);
++  }
++}
++
+ + (id<FBResponsePayload>)handlePerformW3CTouchActions:(FBRouteRequest *)request
+ {
+   XCUIApplication *application = request.session.activeApplication;
+diff --git a/WebDriverAgentLib/Utilities/FBXCTestDaemonsProxy.m b/WebDriverAgentLib/Utilities/FBXCTestDaemonsProxy.m
+index 34fca95..de39e03 100644
+--- a/WebDriverAgentLib/Utilities/FBXCTestDaemonsProxy.m
++++ b/WebDriverAgentLib/Utilities/FBXCTestDaemonsProxy.m
+@@ -7,6 +7,7 @@
+  */
+ 
+ #import "FBXCTestDaemonsProxy.h"
++#import "IMInputTiming.h"
+ 
+ #import <objc/runtime.h>
+ 
+@@ -106,8 +107,11 @@ static void swizzledLaunchApp(id self, SEL _cmd, NSString *path, NSString *bundl
+ + (BOOL)synthesizeEventWithRecord:(XCSynthesizedEventRecord *)record error:(NSError *__autoreleasing*)error
+ {
+   __block NSError *innerError = nil;
++  IMInputTiming *timing = IMCurrentInputTiming();
++  [timing mark:@"completion_wait_begin"];
+   [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)(void)){
+     void (^errorHandler)(NSError *) = ^(NSError *invokeError) {
++      [timing mark:@"synthesis_callback"];
+       if (nil != invokeError) {
+         innerError = invokeError;
+       }
+@@ -117,10 +121,12 @@ static void swizzledLaunchApp(id self, SEL _cmd, NSString *path, NSString *bundl
+     void (^handlerBlock)(XCSynthesizedEventRecord *, NSError *) = ^(XCSynthesizedEventRecord *innerRecord, NSError *invokeError) {
+       errorHandler(invokeError);
+     };
++    [timing mark:@"synthesis_submit"];
+     [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:record completion:(id)^(BOOL result, NSError *invokeError) {
+       handlerBlock(record, invokeError);
+     }];
+   }];
++  [timing mark:@"completion_wait_return"];
+   if (nil != innerError) {
+     if (error) {
+       *error = innerError;
+diff --git a/WebDriverAgentLib/Utilities/IMInputTiming.h b/WebDriverAgentLib/Utilities/IMInputTiming.h
+new file mode 100644
+index 0000000..1338883
+--- /dev/null
++++ b/WebDriverAgentLib/Utilities/IMInputTiming.h
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// iMirror experimental runner timing. No input contents or identifiers are stored.
++#import <Foundation/Foundation.h>
++
++@interface IMInputTiming : NSObject
++- (void)mark:(NSString *)stage;
++- (NSDictionary *)snapshot;
++@end
++
++FOUNDATION_EXPORT IMInputTiming *IMCurrentInputTiming(void);
++FOUNDATION_EXPORT void IMSetInputTiming(IMInputTiming *timing);
