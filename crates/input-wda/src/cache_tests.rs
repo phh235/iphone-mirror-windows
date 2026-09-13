@@ -270,44 +270,60 @@ fn tap_metrics_remain_bounded_and_omit_input() -> Result<(), Box<dyn std::error:
 #[test]
 fn fast_tap_uses_single_complete_contact_without_geometry_query()
 -> Result<(), Box<dyn std::error::Error>> {
-    let expected = json!({"actions":[{"type":"pointer","id":"imirror-tap","parameters":{"pointerType":"touch"},"actions":[
-        {"type":"pointerMove","duration":0,"origin":"viewport","x":58.0,"y":656.0},
-        {"type":"pointerDown","button":0},{"type":"pause","duration":50},{"type":"pointerUp","button":0}
-    ]}]});
-    let (address, handle) = server(vec![
-        session("one"),
-        settings(1),
-        geometry(1, 393, 852),
-        Step {
-            expected_request: Some(expected),
-            ..tap(1)
-        },
-    ])?;
-    let mut client = Wda::new(&address)?;
-    client.geometry()?;
-    client.dispatch(click())?;
-    assert!(client.fast_tap);
-    assert_eq!(client.geometry_requests, 1);
-    join(handle)
+    for contact in [50, 10] {
+        let expected = json!({"actions":[{"type":"pointer","id":"imirror-tap","parameters":{"pointerType":"touch"},"actions":[
+            {"type":"pointerMove","duration":0,"origin":"viewport","x":58.0,"y":656.0},
+            {"type":"pointerDown","button":0},{"type":"pause","duration":contact},{"type":"pointerUp","button":0}
+        ]}]});
+        let (address, handle) = server(vec![
+            session("one"),
+            settings(1),
+            geometry(1, 393, 852),
+            Step {
+                expected_request: Some(expected),
+                ..tap(1)
+            },
+        ])?;
+        let mut client = if contact == 10 {
+            Wda::with_experimental_short_tap(&address)?
+        } else {
+            Wda::new(&address)?
+        };
+        client.geometry()?;
+        client.dispatch(click())?;
+        assert!(client.fast_tap);
+        assert_eq!(client.geometry_requests, 1);
+        assert_eq!(client.diagnostics()["tap_contact_ms"], contact);
+        join(handle)?;
+    }
+    Ok(())
 }
 #[test]
 fn unsupported_tuning_keeps_native_tap_compatibility() -> Result<(), Box<dyn std::error::Error>> {
-    let (address, handle) = server(vec![
-        session("one"),
-        Step {
-            code: 404,
-            body: json!({"value":{"error":"unknown command"}}),
-            ..settings(1)
-        },
-        geometry(1, 393, 852),
-        step("POST /session/one/wda/tap HTTP/1.1", json!({"value":null})),
-    ])?;
-    let mut client = Wda::new(&address)?;
-    client.geometry()?;
-    client.dispatch(click())?;
-    assert!(!client.fast_tap);
-    assert_eq!(client.tap_requests, 1);
-    join(handle)
+    for short_tap in [false, true] {
+        let (address, handle) = server(vec![
+            session("one"),
+            Step {
+                code: 404,
+                body: json!({"value":{"error":"unknown command"}}),
+                ..settings(1)
+            },
+            geometry(1, 393, 852),
+            step("POST /session/one/wda/tap HTTP/1.1", json!({"value":null})),
+        ])?;
+        let mut client = if short_tap {
+            Wda::with_experimental_short_tap(&address)?
+        } else {
+            Wda::new(&address)?
+        };
+        client.geometry()?;
+        client.dispatch(click())?;
+        assert!(!client.fast_tap);
+        assert_eq!(client.tap_requests, 1);
+        assert!(client.diagnostics()["tap_contact_ms"].is_null());
+        join(handle)?;
+    }
+    Ok(())
 }
 
 #[test]

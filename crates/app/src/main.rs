@@ -19,6 +19,7 @@ mod ui;
 mod ui_input;
 mod ui_snapshot;
 mod usb_pacing;
+mod visual_lab;
 mod wda_input_trace;
 mod window_layout;
 mod worker;

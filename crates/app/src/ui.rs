@@ -102,6 +102,7 @@ impl Drop for AppearanceWatch {
     }
 }
 struct Ui {
+    visual_lab: Option<crate::visual_lab::Lab>,
     window: HWND,
     host: HWND,
     preview: HWND,
@@ -774,6 +775,16 @@ impl Ui {
         }
     }
     fn update(&mut self) {
+        if let Some(lab) = &mut self.visual_lab
+            && let Err(error) = lab.poll(
+                self.preview,
+                self.video.active && self.video.status.state == 4,
+            )
+        {
+            self.recent_errors
+                .push_back(format!("Visual lab stopped: {error}"));
+            self.visual_lab = None;
+        }
         if let Ok(input) = self.control.snapshots.try_recv() {
             self.input = input;
         }
@@ -1068,6 +1079,7 @@ pub fn run(smoke: bool) -> Result<(), Box<dyn std::error::Error>> {
         window: HWND::default(),
         host: HWND::default(),
         preview: HWND::default(),
+        visual_lab: crate::visual_lab::Lab::from_env()?,
         device_label: HWND::default(),
         status_label: HWND::default(),
         empty: HWND::default(),
@@ -1647,6 +1659,7 @@ fn preview_input(ui: &mut Ui, message: u32, wparam: WPARAM, lparam: LPARAM) {
                             } else {
                                 "swipe"
                             };
+                            crate::wda_input_trace::record("classified", kind, None);
                             if ui.control.send(control::Command::Action(action)) {
                                 crate::wda_input_trace::record("queued", kind, Some(mapped));
                             } else {

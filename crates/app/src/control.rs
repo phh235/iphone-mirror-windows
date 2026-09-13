@@ -33,6 +33,11 @@ pub enum Command {
     Disable,
     Action(Input),
 }
+struct QueuedCommand {
+    command: Command,
+    queued_ns: u64,
+    origin: Option<crate::wda_input_trace::Origin>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
     Off,
@@ -70,7 +75,7 @@ pub struct Snapshot {
     pub wda_last_failure: Option<serde_json::Value>,
 }
 pub struct ControlManager {
-    commands: Sender<Command>,
+    commands: Sender<QueuedCommand>,
     pub snapshots: Receiver<Snapshot>,
     pub mailbox: Arc<Mailbox>,
     raw: Option<RawInput>,
@@ -99,7 +104,7 @@ impl ControlManager {
                 let input = mailbox.clone();
                 Arc::new(move || input.invalidate())
             });
-        let (commands, incoming) = bounded::<Command>(16);
+        let (commands, incoming) = bounded::<QueuedCommand>(16);
         let (outgoing, snapshots) = bounded(1);
         let replace = snapshots.clone();
         let (log_tx, log_rx) = bounded::<Snapshot>(1);
@@ -131,8 +136,11 @@ impl ControlManager {
                         snapshot.message=state.message;
                     }
                 }
-                while let Ok(command)=incoming.try_recv(){
+                while let Ok(queued)=incoming.try_recv(){
                     if stopping.load(Ordering::Acquire){break;}
+                    let dequeued_ns=now_ns();
+                    let command=queued.command;
+                    let http_before=wda.as_ref().map_or(0,Wda::request_count);
                     let operation=match &command{Command::Action(Input::Tap(_))=>"tap",Command::Action(Input::Swipe{..})=>"swipe",Command::Action(Input::Text(_))=>"text",Command::Action(_)=>"button/release",Command::RefreshGeometry=>"geometry",_=>"setup"};
                     let action=matches!(&command,Command::Action(_));
                     if action{crate::wda_input_trace::record("dispatch",operation,None);}
@@ -148,7 +156,7 @@ impl ControlManager {
                             if ManagedRuntime::configured(){
                                 managed=Some(ManagedRuntime::start().map_err(|e|e.to_string())?);attach_at=Instant::now();snapshot.ble_error=None;snapshot.message="Starting advanced control. Keep the iPhone unlocked.".into();
                             }else{
-                                let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
+                                let mut client=create_wda().map_err(|e|e.to_string())?;
                                 snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();
                             }
                         },
@@ -165,6 +173,14 @@ impl ControlManager {
                         },
                         Command::Action(action)=>{if !input.ready.load(Ordering::Acquire){return Err("Advanced control is not ready. The queued action was not sent.".into());}wda.as_mut().ok_or("Advanced control is not connected")?.dispatch(action).map_err(|e|e.to_string())?;}
                     }Ok(())})();
+                    if action {
+                        crate::wda_input_trace::dispatch(crate::wda_input_trace::Dispatch {
+                            origin:queued.origin,queued_ns:queued.queued_ns,dequeued_ns,completed_ns:now_ns(),
+                            http:wda.as_ref().and_then(|w|w.last_timing).filter(|h|h.start_ns>=dequeued_ns),
+                            http_requests:wda.as_ref().map_or(0,Wda::request_count).saturating_sub(http_before),
+                            operation,success:result.is_ok(),
+                        });
+                    }
                     if let Err(error)=result{
                         if action || wda.is_some(){
                             crate::wda_input_trace::record("failed",operation,None);
@@ -179,7 +195,7 @@ impl ControlManager {
                     if state.ready && wda.is_none() && Instant::now()>=attach_at{
                         attach_at=Instant::now()+Duration::from_secs(2);
                         let result=(||->Result<(Wda,Size),String>{
-                            let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
+                            let mut client=create_wda().map_err(|e|e.to_string())?;
                             let size=client.geometry().map_err(|e|e.to_string())?;
                             let current=runtime.status();if !current.ready || current.generation!=state.generation{return Err("WDA restarted while connecting. Retrying.".into());}
                             Ok((client,size))
@@ -274,7 +290,22 @@ impl ControlManager {
         })
     }
     fn enqueue(&self, command: Command) -> bool {
-        let sent = self.commands.try_send(command).is_ok();
+        let origin = if matches!(
+            &command,
+            Command::Action(Input::Tap(_) | Input::Swipe { .. })
+        ) {
+            crate::wda_input_trace::take_origin()
+        } else {
+            None
+        };
+        let sent = self
+            .commands
+            .try_send(QueuedCommand {
+                command,
+                origin,
+                queued_ns: now_ns(),
+            })
+            .is_ok();
         self.mailbox.wake();
         sent
     }
@@ -357,6 +388,14 @@ impl ControlManager {
 impl Drop for ControlManager {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+fn create_wda() -> Result<Wda, imirror_input_wda::WdaError> {
+    const ADDRESS: &str = "http://127.0.0.1:8100";
+    if std::env::var("IMIRROR_EXPERIMENT_WDA_SHORT_TAP").as_deref() == Ok("1") {
+        Wda::with_experimental_short_tap(ADDRESS)
+    } else {
+        Wda::new(ADDRESS)
     }
 }
 pub fn diagnostic_path() -> Option<std::path::PathBuf> {

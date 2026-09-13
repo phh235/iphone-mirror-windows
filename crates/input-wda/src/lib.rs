@@ -1,6 +1,11 @@
 //! Loopback-only WebDriverAgent client. No Appium, Python, or Node runtime.
+#[cfg(feature = "performance-probe")]
+pub mod probe;
+#[cfg(all(windows, feature = "performance-probe"))]
+pub mod probe_visual;
 #[cfg(windows)]
 pub mod runtime;
+pub mod timing;
 use imirror_coordinate_map::{Point, Size};
 use imirror_input_core::{Button, Controller, Input};
 use reqwest::{Method, Url, blocking::Client};
@@ -37,12 +42,15 @@ pub enum WdaError {
     TapModeChanged,
 }
 pub struct Wda {
+    #[cfg(feature = "performance-probe")]
+    borrowed_session: bool,
     client: Client,
     endpoint: Url,
     session: Option<String>,
     geometry_cache: Option<Size>,
     timeout: Duration,
     fast_tap: bool,
+    tap_contact_ms: u64,
     tuning_note: &'static str,
     requests: u64,
     geometry_requests: u64,
@@ -52,6 +60,7 @@ pub struct Wda {
     last_geometry_request: Option<Duration>,
     last_error_category: Option<&'static str>,
     pub last_request: Option<Duration>,
+    pub last_timing: Option<timing::HttpTiming>,
 }
 fn endpoint(text: &str) -> Result<Url, WdaError> {
     let url = Url::parse(text).map_err(|_| WdaError::InvalidEndpoint)?;
@@ -76,6 +85,13 @@ impl Wda {
     pub fn new(address: &str) -> Result<Self, WdaError> {
         Self::with_timeout(address, Duration::from_secs(4))
     }
+    /// Explicit experimental candidate. Ordinary constructors retain 50 ms.
+    /// The native tap fallback is unchanged if session tuning is unsupported.
+    pub fn with_experimental_short_tap(address: &str) -> Result<Self, WdaError> {
+        let mut client = Self::new(address)?;
+        client.tap_contact_ms = 10;
+        Ok(client)
+    }
     pub fn with_timeout(address: &str, timeout: Duration) -> Result<Self, WdaError> {
         let endpoint = endpoint(address)?;
         let client = Client::builder()
@@ -86,12 +102,15 @@ impl Wda {
             .build()
             .map_err(WdaError::Connection)?;
         Ok(Self {
+            #[cfg(feature = "performance-probe")]
+            borrowed_session: false,
             client,
             endpoint,
             session: None,
             geometry_cache: None,
             timeout,
             fast_tap: false,
+            tap_contact_ms: 50,
             tuning_note: "Not configured",
             requests: 0,
             geometry_requests: 0,
@@ -101,6 +120,7 @@ impl Wda {
             last_geometry_request: None,
             last_error_category: None,
             last_request: None,
+            last_timing: None,
         })
     }
     fn request(
@@ -110,6 +130,10 @@ impl Wda {
         body: Option<&Value>,
     ) -> Result<Value, WdaError> {
         let start = Instant::now();
+        self.last_timing = Some(timing::HttpTiming {
+            start_ns: imirror_input_core::metrics::now_ns(),
+            ..Default::default()
+        });
         self.requests += 1;
         self.geometry_requests += u64::from(path.ends_with("/window/size"));
         self.tap_requests += u64::from(
@@ -119,6 +143,9 @@ impl Wda {
         );
         let result = self.request_inner(method, path, body);
         let elapsed = start.elapsed();
+        if let Some(timing) = &mut self.last_timing {
+            timing.completed_ns = imirror_input_core::metrics::now_ns();
+        }
         self.last_request = Some(elapsed);
         if path.ends_with("/window/size") {
             self.last_geometry_request = Some(elapsed);
@@ -168,11 +195,20 @@ impl Wda {
         if let Some(body) = body {
             request = request.json(body);
         }
+        if let Some(timing) = &mut self.last_timing {
+            timing.request_ready_ns = imirror_input_core::metrics::now_ns();
+        }
         let response = request.send().map_err(WdaError::Connection);
         let response = response?;
+        if let Some(timing) = &mut self.last_timing {
+            timing.headers_ready_ns = Some(imirror_input_core::metrics::now_ns());
+        }
         let status = response.status().as_u16();
         let mut bytes = Vec::new();
         response.take(MAX_REPLY + 1).read_to_end(&mut bytes)?;
+        if let Some(timing) = &mut self.last_timing {
+            timing.body_ready_ns = Some(imirror_input_core::metrics::now_ns());
+        }
         if bytes.len() as u64 > MAX_REPLY {
             return Err(WdaError::InvalidResponse);
         }
@@ -197,6 +233,10 @@ impl Wda {
     fn ensure_session(&mut self) -> Result<String, WdaError> {
         if let Some(session) = &self.session {
             return Ok(session.clone());
+        }
+        #[cfg(feature = "performance-probe")]
+        if self.borrowed_session {
+            return Err(WdaError::SessionExpired);
         }
         self.geometry_cache = None;
         self.fast_tap = false;
@@ -227,8 +267,11 @@ impl Wda {
                     && reply["value"]["animationCoolOffTimeout"].as_f64() == Some(0.0) =>
             {
                 self.fast_tap = true;
-                self.tuning_note =
-                    "W3C 50 ms tap; zero idle/animation waits verified at session setup";
+                self.tuning_note = if self.tap_contact_ms == 10 {
+                    "Experimental W3C 10 ms tap; zero idle/animation waits verified at session setup"
+                } else {
+                    "W3C 50 ms tap; zero idle/animation waits verified at session setup"
+                };
             }
             Ok(_) | Err(WdaError::Rejected(400 | 404 | 405)) => {
                 self.tuning_note =
@@ -251,6 +294,10 @@ impl Wda {
         // Only a definite invalid-session rejection is safe to replay. Never
         // repeat a tap/text/swipe after a timeout with an ambiguous outcome.
         if matches!(result, Err(WdaError::SessionExpired)) {
+            #[cfg(feature = "performance-probe")]
+            if self.borrowed_session {
+                return result;
+            }
             let session = self.ensure_session()?;
             if method == Method::POST
                 && matches!(path, "wda/tap" | "actions")
@@ -276,6 +323,9 @@ impl Wda {
     pub fn status(&mut self) -> Result<Value, WdaError> {
         self.request(Method::GET, "status", None)
     }
+    pub fn request_count(&self) -> u64 {
+        self.requests
+    }
     fn cached_geometry(&mut self) -> Result<Size, WdaError> {
         match self.geometry_cache {
             Some(size) => Ok(size),
@@ -295,9 +345,11 @@ impl Wda {
             "tap_requests":self.tap_requests,"tap_failures":self.tap_failures,
             "geometry_cached":self.geometry_cache.is_some(),
             "last_error_category":self.last_error_category,
-            "tap_transport":if self.fast_tap{"W3C actions, 50 ms contact"}else{"native wda/tap"},
+            "tap_transport":if !self.fast_tap{"native wda/tap"}else if self.tap_contact_ms==10{"W3C actions, 10 ms contact (experimental)"}else{"W3C actions, 50 ms contact"},
+            "tap_contact_ms":self.fast_tap.then_some(self.tap_contact_ms),
             "latency_configuration":self.tuning_note,
             "last_http_ms":self.last_request.map(|d|d.as_secs_f64()*1000.0),
+            "last_http_breakdown":self.last_timing.map(timing::HttpTiming::json),
             "last_geometry_request_ms":self.last_geometry_request.map(|d|d.as_secs_f64()*1000.0),
             "tap_dispatch":{"samples":samples.len(),"window_limit":64,
                 "avg_ms":(!samples.is_empty()).then(||samples.iter().sum::<f64>()/samples.len() as f64),
@@ -361,7 +413,7 @@ impl Wda {
                         "actions",
                         json!({"actions":[{"type":"pointer","id":"imirror-tap","parameters":{"pointerType":"touch"},"actions":[
                             {"type":"pointerMove","duration":0,"origin":"viewport","x":p.x,"y":p.y},
-                            {"type":"pointerDown","button":0},{"type":"pause","duration":50},{"type":"pointerUp","button":0}
+                            {"type":"pointerDown","button":0},{"type":"pause","duration":self.tap_contact_ms},{"type":"pointerUp","button":0}
                         ]}]}),
                     )
                 } else {
