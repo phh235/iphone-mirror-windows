@@ -148,8 +148,8 @@ trên một iPhone; chưa xác nhận 60 FPS, độ trễ đầu-cuối hay đ�
 Xem [bản đã thử và giới hạn](docs/WIRELESS_BLACK_SCREEN_DIAGNOSIS.md).
 
 Nếu dùng WDA nâng cao, tổ hợp đã thử là **video Wireless + USB cho WDA**.
-Một click trên hình live đã tác động đúng lên iPhone; kéo và gõ bằng WDA chưa
-được kiểm chứng. USB QuickTime làm ngắt tunnel WDA trên máy đã thử, nên không
+Click và vuốt danh sách trên hình live đã tác động đúng lên iPhone; kéo/thả
+đối tượng, nhấn giữ và gõ bằng WDA chưa được kiểm chứng. USB QuickTime làm ngắt tunnel WDA trên máy đã thử, nên không
 dùng đồng thời hai đường USB đó. Sau khi đăng ký thiết lập WDA đã hoạt động,
 iMirror tự khởi động và quản lý runner/tunnel khi bật Control với WDA được chọn.
 WDA đã bớt một truy vấn thừa trước mỗi tap, nhưng thời gian xử lý phía phần mềm
@@ -158,6 +158,10 @@ chuột Bluetooth. Nếu helper ngắt, app tự thử phục hồi; đợi tr�
 **Advanced control connected**. Nếu chờ lâu, xem **Settings → Advanced → Diagnostics**;
 không cần ngắt video Wireless hay mở thêm EXE.
 Xem [kết quả và giới hạn đã đo](docs/WDA_PERFORMANCE_VALIDATION.md).
+Lượt tối ưu W3C tiếp theo giảm thời gian HTTP tap trung bình từ khoảng 567 xuống
+429 ms trong bài đo nhỏ trên iPhone thật. Đây không phải độ trễ màn hình hoặc
+cam kết phản hồi tức thì. WDA vẫn phát cử chỉ vuốt sau khi nhả chuột, không bám
+liên tục theo tay trong lúc kéo. Xem [bản mới và giới hạn](docs/WDA_LATENCY_TUNING.md).
 
 ## 8. Xử lý lỗi
 

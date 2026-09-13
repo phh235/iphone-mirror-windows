@@ -33,12 +33,17 @@ pub enum WdaError {
     InvalidInput,
     #[error("WDA screen geometry changed with the session; reconnect control before tapping")]
     GeometryChanged,
+    #[error("WDA tap capabilities changed with the session; try the action again")]
+    TapModeChanged,
 }
 pub struct Wda {
     client: Client,
     endpoint: Url,
     session: Option<String>,
     geometry_cache: Option<Size>,
+    timeout: Duration,
+    fast_tap: bool,
+    tuning_note: &'static str,
     requests: u64,
     geometry_requests: u64,
     tap_requests: u64,
@@ -85,6 +90,9 @@ impl Wda {
             endpoint,
             session: None,
             geometry_cache: None,
+            timeout,
+            fast_tap: false,
+            tuning_note: "Not configured",
             requests: 0,
             geometry_requests: 0,
             tap_requests: 0,
@@ -104,7 +112,11 @@ impl Wda {
         let start = Instant::now();
         self.requests += 1;
         self.geometry_requests += u64::from(path.ends_with("/window/size"));
-        self.tap_requests += u64::from(path.ends_with("/wda/tap"));
+        self.tap_requests += u64::from(
+            path.ends_with("/wda/tap")
+                || (path.ends_with("/actions")
+                    && body.is_some_and(|b| b["actions"][0]["id"] == "imirror-tap")),
+        );
         let result = self.request_inner(method, path, body);
         let elapsed = start.elapsed();
         self.last_request = Some(elapsed);
@@ -138,6 +150,21 @@ impl Wda {
             .join(path)
             .map_err(|_| WdaError::InvalidEndpoint)?;
         let mut request = self.client.request(method, url);
+        if path.ends_with("/actions") {
+            // A real five-second gesture must not hit the ordinary four-second
+            // HTTP timeout while still executing. This never retries input.
+            let duration = body
+                .and_then(|b| b["actions"][0]["actions"].as_array())
+                .map(|actions| {
+                    actions
+                        .iter()
+                        .filter_map(|a| a["duration"].as_u64())
+                        .sum::<u64>()
+                })
+                .unwrap_or(0)
+                .min(5000);
+            request = request.timeout(self.timeout.saturating_add(Duration::from_millis(duration)));
+        }
         if let Some(body) = body {
             request = request.json(body);
         }
@@ -172,6 +199,7 @@ impl Wda {
             return Ok(session.clone());
         }
         self.geometry_cache = None;
+        self.fast_tap = false;
         let response=self.request(Method::POST,"session",Some(&json!({
             "capabilities":{"alwaysMatch":{"shouldWaitForQuiescence":false,"waitForIdleTimeout":0}}
         })))?;
@@ -189,6 +217,25 @@ impl Wda {
             return Err(WdaError::InvalidResponse);
         }
         self.session = Some(session.to_owned());
+        match self.request(
+            Method::POST,
+            &format!("session/{session}/appium/settings"),
+            Some(&json!({"settings":{"waitForIdleTimeout":0,"animationCoolOffTimeout":0}})),
+        ) {
+            Ok(reply)
+                if reply["value"]["waitForIdleTimeout"].as_f64() == Some(0.0)
+                    && reply["value"]["animationCoolOffTimeout"].as_f64() == Some(0.0) =>
+            {
+                self.fast_tap = true;
+                self.tuning_note =
+                    "W3C 50 ms tap; zero idle/animation waits verified at session setup";
+            }
+            Ok(_) | Err(WdaError::Rejected(400 | 404 | 405)) => {
+                self.tuning_note =
+                    "Runner did not confirm latency settings; using native tap fallback";
+            }
+            Err(error) => return Err(error),
+        }
         Ok(session.to_owned())
     }
     fn session_request(
@@ -199,6 +246,7 @@ impl Wda {
     ) -> Result<Value, WdaError> {
         let session = self.ensure_session()?;
         let previous_geometry = self.geometry_cache;
+        let previous_fast_tap = self.fast_tap;
         let result = self.request(method.clone(), &format!("session/{session}/{path}"), body);
         // Only a definite invalid-session rejection is safe to replay. Never
         // repeat a tap/text/swipe after a timeout with an ambiguous outcome.
@@ -212,6 +260,13 @@ impl Wda {
                 // The point was mapped against the old geometry. Don't replay
                 // it onto a rotated/replaced session's coordinate system.
                 return Err(WdaError::GeometryChanged);
+            }
+            if method == Method::POST
+                && previous_fast_tap != self.fast_tap
+                && (path == "wda/tap"
+                    || body.is_some_and(|b| b["actions"][0]["id"] == "imirror-tap"))
+            {
+                return Err(WdaError::TapModeChanged);
             }
             self.request(method, &format!("session/{session}/{path}"), body)
         } else {
@@ -240,6 +295,8 @@ impl Wda {
             "tap_requests":self.tap_requests,"tap_failures":self.tap_failures,
             "geometry_cached":self.geometry_cache.is_some(),
             "last_error_category":self.last_error_category,
+            "tap_transport":if self.fast_tap{"W3C actions, 50 ms contact"}else{"native wda/tap"},
+            "latency_configuration":self.tuning_note,
             "last_http_ms":self.last_request.map(|d|d.as_secs_f64()*1000.0),
             "last_geometry_request_ms":self.last_geometry_request.map(|d|d.as_secs_f64()*1000.0),
             "tap_dispatch":{"samples":samples.len(),"window_limit":64,
@@ -299,7 +356,17 @@ impl Wda {
                 if !Self::valid_point(p, size) {
                     return Err(WdaError::InvalidInput);
                 }
-                ("wda/tap", json!({"x":p.x,"y":p.y}))
+                if self.fast_tap {
+                    (
+                        "actions",
+                        json!({"actions":[{"type":"pointer","id":"imirror-tap","parameters":{"pointerType":"touch"},"actions":[
+                            {"type":"pointerMove","duration":0,"origin":"viewport","x":p.x,"y":p.y},
+                            {"type":"pointerDown","button":0},{"type":"pause","duration":50},{"type":"pointerUp","button":0}
+                        ]}]}),
+                    )
+                } else {
+                    ("wda/tap", json!({"x":p.x,"y":p.y}))
+                }
             }
             Input::Swipe { from, to, duration } => {
                 let size = self.cached_geometry()?;

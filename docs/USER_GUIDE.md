@@ -160,8 +160,8 @@ The WDA option then appears in Control settings. Phone-side signing and Develope
 Mode requirements apply; deployment uses an appropriate Apple signing identity.
 iMirror does not provide signing credentials or bundle a runner. Normal USB and
 Bluetooth Mouse operation does not need WDA. One Windows click on live Wireless
-video has been confirmed to tap the physical iPhone through WDA. Drag and typing
-remain untested.
+video has been confirmed to tap the physical iPhone through WDA. Simple list
+swipes are also confirmed; object dragging, long presses and typing remain untested.
 
 For the validated combination, use **Wireless video + USB for WDA**. QuickTime
 USB mirroring interrupted the WDA USB tunnel on the tested host. After the
@@ -178,6 +178,10 @@ See [setup, lifecycle and exact validation](WDA_MANAGED_RUNTIME.md).
 WDA is a precision automation path, not an instant mouse transport. The tested
 geometry-cache build felt slightly faster, but observed software tap dispatch
 still took about 0.6 seconds at the median. See [measured limits](WDA_PERFORMANCE_VALIDATION.md).
+The later W3C tap candidate reduced average HTTP tap time from about 567 to
+429 ms in a small real-device comparison. This is not a zero-latency guarantee;
+see [current tuning and candidate status](WDA_LATENCY_TUNING.md). WDA swipes still
+play after releasing the mouse; they do not continuously follow a held mouse.
 If a managed helper stops, iMirror invalidates control and retries automatically.
 Wait for **Advanced control connected**; if it stays unavailable, inspect
 **Settings → Advanced → Diagnostics** for the runtime reason. The manual

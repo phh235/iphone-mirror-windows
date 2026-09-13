@@ -994,3 +994,51 @@ The captured click reached dispatch about 0.022 ms after native mouse-up;
 dispatch to completion took 1068.205 ms. This separates fast Windows queueing
 from the slow WDA call, and is one software-timestamped sample, not physical
 display latency. Preserve this candidate before further WDA optimization.
+
+## 2026-09-13 — measured WDA tap tuning, rejected curve experiment
+
+Saved checkpoint/wda-click-verified-20260913 at cb31f51 before optimization.
+With explicit user authorization, ran ten alternating Calculator key-1 taps.
+Native tap averaged 567.275 ms (median 534.457); W3C touch with a 50 ms contact
+and animation cool-off 0 averaged 428.708 ms (median 434.050). Five samples per
+profile, no HTTP failures, about 24.4% lower mean. The user confirmed the phone
+entered the additional digits. These are direct HTTP timings, not full physical
+mouse-to-display latency or the integrated EXE's acceptance test. Restored the
+original setting after the benchmark. Actual WDA reported version 16.12.7;
+the setup reference tag is v16.12.8. Idle timeout was already 0, so no improvement
+is credited to disabling idle waiting.
+
+Integrated the tested W3C tap after per-session setting confirmation, retaining
+native tap fallback if tuning is unsupported. Geometry remains cached. No
+ambiguous timeout is replayed; changed geometry or tap strategy after definite
+session expiry rejects the old action. Bounded HTTP deadlines now include the
+requested swipe duration, avoiding the former four-second timeout for a valid
+five-second gesture.
+
+An experimental 64-point recorder was implemented and software-tested, then
+REVERTED after a separate authorized two-swipe comparison. Two points took
+1017.796 ms; eight points took 1780.087 ms, each including the same 300 ms swipe.
+Both HTTP requests succeeded, but this is not a physical-smoothness confirmation.
+Restored the simpler input-core and Win32 gesture path exactly to the checkpoint;
+the final implementation changes only input-wda. Experiment evidence remains
+in ignored work/wda-setup; no sampled-curve production code remains.
+
+Final fmt, strict Clippy, 73 Rust tests and release build passed. Staged
+dist/wda-fast-input-20260913/iMirror.exe, SHA-256
+c577805db7cd72ac01a52ab2d7e83edd9f450f9c342941c1957fbe32baf54db0.
+Its PE imports resolve; every retained helper/DLL hash matches the prior
+candidate. Started one instance with system-only PATH. It reports WDA Ready and
+W3C 50 ms contact; independent settings readback confirmed idle and animation
+timeouts are both 0. Requested the user's real integrated click/swipe test;
+acceptance was pending at staging. Media, BLE, Raw Input, native UI and Quality video
+are unchanged. See WDA_LATENCY_TUNING.md for measured limits and trade-offs.
+
+The user subsequently confirmed this exact integrated EXE: "Click nhanh hơn,
+vuốt nhận đều". Record faster subjective clicking and consistently received
+simple swipes as PASS for this setup. Current diagnostics also show W3C tap mode,
+Ready and no current error. Full-process trace counters remain separate from
+per-session metrics. The latest two-tap session averaged 670.301 ms; this is an
+uncontrolled app-use sample, not the same controlled Calculator A/B test, and
+does not replace or generalize the 567-to-429 ms comparison. Object dragging,
+long presses, rotation/reconnect, sustained stability and clean-machine packaging
+remain unvalidated for this candidate.

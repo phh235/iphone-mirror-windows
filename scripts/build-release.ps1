@@ -35,7 +35,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'README.md'),(Join-Path $root 'HUONG_DAN.md'),(Join-Path $root 'docs/VALIDATION.md') -Destination $stage
     New-Item -ItemType Directory -Force (Join-Path $stage 'docs') | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'docs/VALIDATION.md') -Destination (Join-Path $stage 'docs')
-    Copy-Item -LiteralPath (Join-Path $root 'docs/USER_GUIDE.md'),(Join-Path $root 'docs/LICENSING.md'),(Join-Path $root 'docs/WDA_MANAGED_RUNTIME.md'),(Join-Path $root 'docs/WDA_PERFORMANCE_VALIDATION.md') -Destination (Join-Path $stage 'docs')
+    Copy-Item -LiteralPath (Join-Path $root 'docs/USER_GUIDE.md'),(Join-Path $root 'docs/LICENSING.md'),(Join-Path $root 'docs/WDA_MANAGED_RUNTIME.md'),(Join-Path $root 'docs/WDA_PERFORMANCE_VALIDATION.md'),(Join-Path $root 'docs/WDA_LATENCY_TUNING.md') -Destination (Join-Path $stage 'docs')
     Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 } | ForEach-Object { $_.LastWriteTime = [DateTime]'1980-01-01' }
     $manifest = @(Get-ChildItem -LiteralPath $stage -File -Recurse | ForEach-Object {
         [ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}

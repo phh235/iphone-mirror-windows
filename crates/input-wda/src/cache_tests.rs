@@ -10,6 +10,7 @@ struct Step {
     code: u16,
     body: Value,
     delay: Duration,
+    expected_request: Option<Value>,
 }
 fn step(line: &'static str, body: Value) -> Step {
     Step {
@@ -17,6 +18,7 @@ fn step(line: &'static str, body: Value) -> Step {
         code: 200,
         body,
         delay: Duration::ZERO,
+        expected_request: None,
     }
 }
 fn session(id: &str) -> Step {
@@ -32,12 +34,27 @@ fn geometry(id: u8, width: u32, height: u32) -> Step {
         json!({"value":{"width":width,"height":height}}),
     )
 }
+fn settings(id: u8) -> Step {
+    Step {
+        expected_request: Some(
+            json!({"settings":{"waitForIdleTimeout":0,"animationCoolOffTimeout":0}}),
+        ),
+        ..step(
+            if id == 1 {
+                "POST /session/one/appium/settings HTTP/1.1"
+            } else {
+                "POST /session/two/appium/settings HTTP/1.1"
+            },
+            json!({"value":{"waitForIdleTimeout":0,"animationCoolOffTimeout":0}}),
+        )
+    }
+}
 fn tap(id: u8) -> Step {
     step(
         if id == 1 {
-            "POST /session/one/wda/tap HTTP/1.1"
+            "POST /session/one/actions HTTP/1.1"
         } else {
-            "POST /session/two/wda/tap HTTP/1.1"
+            "POST /session/two/actions HTTP/1.1"
         },
         json!({"value":null}),
     )
@@ -100,6 +117,12 @@ fn server(steps: Vec<Step>) -> Result<MockServer, Box<dyn std::error::Error>> {
             }
             let mut body = vec![0; length];
             reader.read_exact(&mut body).map_err(|e| e.to_string())?;
+            if let Some(expected_body) = expected.expected_request {
+                let actual: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+                if actual != expected_body {
+                    return Err(format!("Wrong request body for {}", expected.line));
+                }
+            }
             drop(reader);
             thread::sleep(expected.delay);
             let reply = expected.body.to_string();
@@ -130,20 +153,27 @@ fn click() -> Input {
 
 #[test]
 fn warm_taps_use_one_http_request_each() -> Result<(), Box<dyn std::error::Error>> {
-    let (address, handle) = server(vec![session("one"), geometry(1, 393, 852), tap(1), tap(1)])?;
+    let (address, handle) = server(vec![
+        session("one"),
+        settings(1),
+        geometry(1, 393, 852),
+        tap(1),
+        tap(1),
+    ])?;
     let mut client = Wda::new(&address)?;
     client.geometry()?;
     client.dispatch(click())?;
     client.dispatch(click())?;
     assert_eq!(client.geometry_requests, 1);
     assert_eq!(client.tap_requests, 2);
-    assert_eq!(client.requests, 4);
+    assert_eq!(client.requests, 5);
     join(handle)
 }
 #[test]
 fn explicit_rotation_refresh_replaces_cached_bounds() -> Result<(), Box<dyn std::error::Error>> {
     let (address, handle) = server(vec![
         session("one"),
+        settings(1),
         geometry(1, 393, 852),
         geometry(1, 852, 393),
         tap(1),
@@ -160,9 +190,11 @@ fn definite_session_rejection_refreshes_before_safe_retry() -> Result<(), Box<dy
 {
     let (address, handle) = server(vec![
         session("one"),
+        settings(1),
         geometry(1, 393, 852),
         expired(),
         session("two"),
+        settings(2),
         geometry(2, 393, 852),
         tap(2),
     ])?;
@@ -177,9 +209,11 @@ fn definite_session_rejection_refreshes_before_safe_retry() -> Result<(), Box<dy
 fn changed_geometry_never_replays_old_point() -> Result<(), Box<dyn std::error::Error>> {
     let (address, handle) = server(vec![
         session("one"),
+        settings(1),
         geometry(1, 393, 852),
         expired(),
         session("two"),
+        settings(2),
         geometry(2, 852, 393),
     ])?;
     let mut client = Wda::new(&address)?;
@@ -196,6 +230,7 @@ fn ambiguous_tap_timeout_is_not_retried_and_invalidates_cache()
 -> Result<(), Box<dyn std::error::Error>> {
     let (address, handle) = server(vec![
         session("one"),
+        settings(1),
         geometry(1, 393, 852),
         Step {
             delay: Duration::from_millis(200),
@@ -214,7 +249,7 @@ fn ambiguous_tap_timeout_is_not_retried_and_invalidates_cache()
 }
 #[test]
 fn tap_metrics_remain_bounded_and_omit_input() -> Result<(), Box<dyn std::error::Error>> {
-    let mut steps = vec![session("one"), geometry(1, 393, 852)];
+    let mut steps = vec![session("one"), settings(1), geometry(1, 393, 852)];
     steps.extend((0..70).map(|_| tap(1)));
     let (address, handle) = server(steps)?;
     let mut client = Wda::new(&address)?;
@@ -229,5 +264,95 @@ fn tap_metrics_remain_bounded_and_omit_input() -> Result<(), Box<dyn std::error:
     for key in ["session", "session_id", "x", "y", "text", "body"] {
         assert!(metrics.get(key).is_none());
     }
+    join(handle)
+}
+
+#[test]
+fn fast_tap_uses_single_complete_contact_without_geometry_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let expected = json!({"actions":[{"type":"pointer","id":"imirror-tap","parameters":{"pointerType":"touch"},"actions":[
+        {"type":"pointerMove","duration":0,"origin":"viewport","x":58.0,"y":656.0},
+        {"type":"pointerDown","button":0},{"type":"pause","duration":50},{"type":"pointerUp","button":0}
+    ]}]});
+    let (address, handle) = server(vec![
+        session("one"),
+        settings(1),
+        geometry(1, 393, 852),
+        Step {
+            expected_request: Some(expected),
+            ..tap(1)
+        },
+    ])?;
+    let mut client = Wda::new(&address)?;
+    client.geometry()?;
+    client.dispatch(click())?;
+    assert!(client.fast_tap);
+    assert_eq!(client.geometry_requests, 1);
+    join(handle)
+}
+#[test]
+fn unsupported_tuning_keeps_native_tap_compatibility() -> Result<(), Box<dyn std::error::Error>> {
+    let (address, handle) = server(vec![
+        session("one"),
+        Step {
+            code: 404,
+            body: json!({"value":{"error":"unknown command"}}),
+            ..settings(1)
+        },
+        geometry(1, 393, 852),
+        step("POST /session/one/wda/tap HTTP/1.1", json!({"value":null})),
+    ])?;
+    let mut client = Wda::new(&address)?;
+    client.geometry()?;
+    client.dispatch(click())?;
+    assert!(!client.fast_tap);
+    assert_eq!(client.tap_requests, 1);
+    join(handle)
+}
+
+#[test]
+fn changed_tap_mode_after_expiry_does_not_replay_old_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (address, handle) = server(vec![
+        session("one"),
+        settings(1),
+        geometry(1, 393, 852),
+        expired(),
+        session("two"),
+        Step {
+            code: 404,
+            body: json!({"value":{"error":"unknown command"}}),
+            ..settings(2)
+        },
+        geometry(2, 393, 852),
+    ])?;
+    let mut client = Wda::new(&address)?;
+    client.geometry()?;
+    assert!(matches!(
+        client.dispatch(click()),
+        Err(WdaError::TapModeChanged)
+    ));
+    assert_eq!(client.tap_requests, 1);
+    join(handle)
+}
+#[test]
+fn gesture_duration_extends_only_that_requests_timeout() -> Result<(), Box<dyn std::error::Error>> {
+    let (address, handle) = server(vec![
+        session("one"),
+        settings(1),
+        geometry(1, 393, 852),
+        Step {
+            delay: Duration::from_millis(200),
+            ..tap(1)
+        },
+    ])?;
+    let mut client = Wda::with_timeout(&address, Duration::from_millis(80))?;
+    client.geometry()?;
+    client.dispatch(Input::Swipe {
+        from: Point { x: 10.0, y: 20.0 },
+        to: Point { x: 50.0, y: 100.0 },
+        duration: Duration::from_millis(250),
+    })?;
+    assert_eq!(client.tap_requests, 0);
     join(handle)
 }
