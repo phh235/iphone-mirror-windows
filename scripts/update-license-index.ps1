@@ -7,7 +7,18 @@ try {
     $raw = & cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc
     if ($LASTEXITCODE) { throw 'Cargo license metadata failed; fetch the locked dependencies first.' }
     $metadata = ($raw -join "`n") | ConvertFrom-Json
-    $packages = @($metadata.packages | Where-Object source | Sort-Object name,version)
+    # Culture/.NET-dependent Sort-Object ordering differs between Windows
+    # PowerShell and CI's PowerShell 7 (for example, http-body vs httparse).
+    $packages = [Collections.Generic.List[object]]::new()
+    foreach ($package in ($metadata.packages | Where-Object source)) { $packages.Add($package) }
+    $packages.Sort([Comparison[object]]{
+        param($left, $right)
+        foreach ($field in @('name','version','id')) {
+            $order = [StringComparer]::Ordinal.Compare([string]$left.$field, [string]$right.$field)
+            if ($order -ne 0) { return $order }
+        }
+        return 0
+    })
     $lines = [Collections.Generic.List[string]]::new()
     $intro = @'
 # Third-party licenses
@@ -47,9 +58,17 @@ disappear. Exact native package archives are pinned in
 [msys-build-lock.json](docs/msys-build-lock.json). Their staged-file hashes and
 notices must be regenerated for an actual release, not inferred from this table.
 
-WebDriverAgent/go-ios are optional external setup tools, not bundled application
-dependencies. Apple proprietary software, credentials and non-OSI iUsbBridge
-components are excluded.
+The optional managed WDA runtime stages the MIT-licensed go-ios Windows CLI and
+the GPL-3.0-only [iMirror forwarder](vendor/wda-forwarder/README.md). The forwarder
+uses go-ios v1.3.2 through its locked Go module graph. Its staging script copies
+the Go SDK and dependency licenses into `WDA/licenses` and records exact binary
+hashes and embedded module versions in `WDA/runtime-manifest.json`. The official
+CLI asset reports modified upstream source; it is hash-pinned, not claimed to
+be rebuilt from the source tag. See [provenance and release limits](docs/WDA_MANAGED_RUNTIME.md).
+
+The signed WebDriverAgent phone runner remains a separately installed prerequisite,
+not a bundled app. Apple proprietary software, credentials, pairing records and
+non-OSI iUsbBridge components are excluded.
 
 ## Rust packages from locked Windows x64 metadata
 

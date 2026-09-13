@@ -1137,3 +1137,25 @@ Local code commits: c17b5b0 (USB/GPU/pacing), eee5b9e (WDA timing/T10). Stable
 checkpoint still resolves to bfa4784; stable EXE hash still c577805d...db0.
 No push/main merge/tag/release. Exact final manual smoke, wireless recovery,
 continuous touch, fault fallback and long-run/clean-machine gates remain open.
+
+## 2026-09-13 — authorized main integration and license-index CI correction
+
+The user explicitly requested integration into main. Fast-forwarded main to
+cad49b0 and pushed it; remote ref verification matched. This supersedes the
+earlier no-merge status, not the hardware/production acceptance limits. M3/T10
+remain opt-in; stable tag and EXE are unchanged. The user subsequently confirmed
+they have not yet tested the new integrated EXE.
+
+GitHub run 34763818055 passed format/docs, strict Clippy, unit tests and release
+build on windows-2022, then failed Verify license index. Reproduced locally:
+the committed index contained the correct managed-WDA provenance paragraph,
+but the generator still emitted its obsolete external-tools-only paragraph.
+Also observed culture/.NET-dependent package ordering between PowerShell 5
+and 7 (httparse vs http-body). Updated the generator's template to match the
+existing correct index and used ordinal name/version/id comparison. Regeneration
+leaves THIRD_PARTY_LICENSES.md unchanged; no notices or packages were removed.
+
+License -Check passed for all 105 Cargo packages on PowerShell 5 and 7, and the
+documentation check passed (33 Markdown files / 121 local links). Application,
+media, BLE/WDA behavior and existing EXE bytes were not modified by this fix.
+The subsequent CI result must be observed separately; no hardware PASS inferred.
