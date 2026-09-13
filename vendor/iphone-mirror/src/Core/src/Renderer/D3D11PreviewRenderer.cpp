@@ -2,6 +2,8 @@
 #include "Renderer/OutputModeState.h"
 
 #include "Logging.h"
+#include "Diagnostics/FramePacing.h"
+#include "Diagnostics/VisualProbe.h"
 
 #include <d3d11.h>
 #include <d3d11_1.h>
@@ -12,6 +14,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -411,6 +414,8 @@ struct D3D11PreviewRenderer::Impl {
     FrameProvider provider;
     std::jthread worker;
     bool composition_mode{};
+    // Opt-in experiment only. Read once before the render worker starts.
+    bool experimental_blocking_present{};
 
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -435,6 +440,17 @@ struct D3D11PreviewRenderer::Impl {
     ComPtr<ID3D11ShaderResourceView> shared_gpu_uv_view;
     ComPtr<IDXGIKeyedMutex> shared_gpu_mutex;
     std::shared_ptr<const media::DecodedFrame::SharedGpuFrame> shared_gpu_frame;
+    struct SharedImport {
+        // A cache must not keep a decoder pool slot in use. Weak ownership
+        // also prevents recycled HANDLE/pointer values matching stale imports.
+        std::weak_ptr<const media::DecodedFrame::SharedGpuFrame> owner;
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11ShaderResourceView> y, uv;
+        ComPtr<IDXGIKeyedMutex> mutex;
+    };
+    std::array<SharedImport,16> shared_import_cache;
+    std::size_t next_shared_import{};
+    std::int64_t shared_gpu_pts{};
     bool shared_gpu_acquired{};
     ComPtr<ID3D11Texture2D> render_texture;
     ComPtr<ID3D11RenderTargetView> render_target;
@@ -491,8 +507,11 @@ struct D3D11PreviewRenderer::Impl {
     std::uint32_t scheduled_fps{};
     std::chrono::steady_clock::time_point next_present_due{};
 
-    Impl(HWND value, FrameProvider frame_provider)
+    Impl(HWND value, FrameProvider frame_provider, bool allow_experimental)
         : window(value), provider(std::move(frame_provider)) {
+        wchar_t blocking[2]{};
+        experimental_blocking_present=allow_experimental && GetEnvironmentVariableW(
+            L"IPHONE_MIRROR_EXPERIMENT_BLOCKING_PRESENT",blocking,2)==1 && blocking[0]==L'1';
         initialize();
         worker = std::jthread([this](std::stop_token token) { run(token); });
     }
@@ -675,6 +694,8 @@ struct D3D11PreviewRenderer::Impl {
         if (composition_device) (void)composition_device->Commit();
 
         release_shared_gpu_frame();
+        shared_import_cache={};
+        next_shared_import=0;
         target.Reset();
         render_view.Reset();
         render_target.Reset();
@@ -1059,10 +1080,12 @@ struct D3D11PreviewRenderer::Impl {
 
     void release_shared_gpu_frame() noexcept {
         if (shared_gpu_acquired && shared_gpu_mutex) {
+            const auto release_start=diagnostics::pacing::stamp();
             if (context) context->Flush();
             // Shared frames can have several read-only consumers. Return the
             // consumer key after this renderer has submitted its sampling work.
             (void)shared_gpu_mutex->ReleaseSync(1);
+            diagnostics::pacing::span(diagnostics::pacing::GpuRelease,shared_gpu_pts,release_start);
         }
         shared_gpu_acquired = false;
         shared_gpu_mutex.Reset();
@@ -1070,14 +1093,49 @@ struct D3D11PreviewRenderer::Impl {
         shared_gpu_uv_view.Reset();
         shared_gpu_texture.Reset();
         shared_gpu_frame.reset();
+        shared_gpu_pts=0;
     }
 
     bool prepare_shared_gpu_frame(const media::DecodedFrame& frame) {
         const auto& gpu_frame = frame.gpu_frame;
         if (!gpu_frame || !gpu_frame->shared_handle || gpu_frame->width == 0 ||
             gpu_frame->height == 0) return false;
+        if(gpu_frame->experimental_state &&
+            gpu_frame->experimental_state->disabled.load(std::memory_order_acquire)) return false;
         if (shared_gpu_frame != gpu_frame) {
             release_shared_gpu_frame();
+            const auto import_start=diagnostics::pacing::stamp();
+            SharedImport* cache_slot=nullptr;
+            bool cache_hit=false;
+            if(gpu_frame->experimental_state && experimental_blocking_present) {
+                for(auto& entry:shared_import_cache) {
+                    const auto owner=entry.owner.lock();
+                    if(owner==gpu_frame) {
+                        shared_gpu_texture=entry.texture;
+                        shared_gpu_y_view=entry.y;
+                        shared_gpu_uv_view=entry.uv;
+                        shared_gpu_mutex=entry.mutex;
+                        shared_gpu_frame=gpu_frame;
+                        cache_hit=true;
+                        break;
+                    }
+                    if(!owner && !cache_slot) cache_slot=&entry;
+                }
+                if(!cache_hit && !cache_slot)
+                    cache_slot=&shared_import_cache[next_shared_import++%shared_import_cache.size()];
+            }
+            if(!cache_hit) {
+            if(gpu_frame->experimental_state) {
+                ComPtr<IDXGIDevice> dxgi_device;
+                ComPtr<IDXGIAdapter> adapter;
+                DXGI_ADAPTER_DESC description{};
+                check(device.As(&dxgi_device),"query renderer adapter device");
+                check(dxgi_device->GetAdapter(&adapter),"query renderer adapter");
+                check(adapter->GetDesc(&description),"query renderer adapter LUID");
+                if(description.AdapterLuid.LowPart!=gpu_frame->adapter_luid_low ||
+                    description.AdapterLuid.HighPart!=gpu_frame->adapter_luid_high)
+                    throw std::runtime_error("GPU handoff adapter mismatch; request CPU fallback");
+            }
             ComPtr<ID3D11Device1> device1;
             check(device.As(&device1), "query D3D11 device 1");
             check(device1->OpenSharedResource1(
@@ -1102,14 +1160,26 @@ struct D3D11PreviewRenderer::Impl {
             check(device->CreateShaderResourceView(shared_gpu_texture.Get(),
                 &uv_description, &shared_gpu_uv_view), "create shared decoder UV view");
             shared_gpu_frame = gpu_frame;
-
+            if(cache_slot) {
+                cache_slot->owner=gpu_frame;
+                cache_slot->texture=shared_gpu_texture;
+                cache_slot->mutex=shared_gpu_mutex;
+                cache_slot->y=shared_gpu_y_view;
+                cache_slot->uv=shared_gpu_uv_view;
+            }
+            }
+            diagnostics::pacing::span(diagnostics::pacing::GpuImport,frame.timestamp_100ns,import_start,cache_hit);
         }
-        const auto wait_result = shared_gpu_mutex->AcquireSync(1, 1000);
+        const auto acquire_start=diagnostics::pacing::stamp();
+        const auto wait_result = shared_gpu_mutex->AcquireSync(1,
+            gpu_frame->experimental_state ? 0 : 1000);
+        diagnostics::pacing::span(diagnostics::pacing::GpuMutex,frame.timestamp_100ns,acquire_start,wait_result);
         if (wait_result != WAIT_OBJECT_0)
             throw std::runtime_error(std::format(
                 "acquire shared decoder texture failed: 0x{:08X}",
                 static_cast<unsigned>(wait_result)));
         shared_gpu_acquired = true;
+        shared_gpu_pts=frame.timestamp_100ns;
         return true;
     }
 
@@ -1278,14 +1348,25 @@ struct D3D11PreviewRenderer::Impl {
         if (frame.gpu_frame) {
             try {
                 if (prepare_shared_gpu_frame(frame)) {
+                    diagnostics::pacing::record(diagnostics::pacing::GpuConsumer,frame.timestamp_100ns,1);
                     frame_width = frame.width;
                     frame_height = frame.height;
                     texture_pixel_format = frame.pixel_format;
                     return true;
                 }
             } catch (const std::exception& error) {
+                if(frame.gpu_frame->experimental_state)
+                    frame.gpu_frame->experimental_state->disabled.store(true,std::memory_order_release);
                 logging::write(std::format(
                     "d3d_preview shared_frame_import_failed reason={}", error.what()));
+            }
+            if(frame.gpu_frame->experimental_state) {
+                // No blocking materialize after import failure. The next
+                // decoder output uses CPU readback; retain the last display.
+                frame.gpu_frame->experimental_state->disabled.store(true,std::memory_order_release);
+                diagnostics::pacing::record(diagnostics::pacing::GpuConsumer,frame.timestamp_100ns,0);
+                release_shared_gpu_frame();
+                return false;
             }
             if (frame.nv12.empty() && frame.gpu_frame) {
                 auto materialized = frame;
@@ -1300,7 +1381,10 @@ struct D3D11PreviewRenderer::Impl {
 
     void render(const media::DecodedFrame& frame) {
         if (target_width == 0 || target_height == 0) return;
-        if (!upload(frame)) return;
+        const auto pacing_upload=diagnostics::pacing::stamp();
+        const auto uploaded=upload(frame);
+        diagnostics::pacing::span(diagnostics::pacing::Upload,frame.timestamp_100ns,pacing_upload,uploaded);
+        if (!uploaded) return;
 
         const auto signature =
             (static_cast<std::uint64_t>(frame.pixel_format) << 32U) |
@@ -1459,9 +1543,18 @@ struct D3D11PreviewRenderer::Impl {
         // Sampling commands have been submitted and SRVs unbound. Flush/release
         // the shared decoder texture before presentation can wait for DWM.
         release_shared_gpu_frame();
+        const auto pacing_present_start=diagnostics::visual::state.enabled.load(std::memory_order_relaxed)
+            ? diagnostics::pacing::qpc() : diagnostics::pacing::stamp();
         const auto present_result = swap_chain->Present(
             vsync_enabled.load(std::memory_order_relaxed) ? 1 : 0,
-            DXGI_PRESENT_DO_NOT_WAIT);
+            experimental_blocking_present ? 0 : DXGI_PRESENT_DO_NOT_WAIT);
+        diagnostics::pacing::record(diagnostics::pacing::Present,frame.timestamp_100ns,
+            pacing_present_start,static_cast<std::int64_t>(present_result),
+            static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(swap_chain.Get())));
+        if(present_result==S_OK && diagnostics::visual::state.enabled.load(std::memory_order_relaxed))
+            diagnostics::visual::observe(window,frame,pacing_present_start,
+                diagnostics::pacing::qpc(),reinterpret_cast<std::uintptr_t>(swap_chain.Get()),
+                local_render_width,local_render_height);
         if (present_result == DXGI_ERROR_WAS_STILL_DRAWING)
             refresh_requested.store(true, std::memory_order_release);
         if (present_result != DXGI_ERROR_WAS_STILL_DRAWING)
@@ -1581,9 +1674,12 @@ struct D3D11PreviewRenderer::Impl {
                     continue;
                 }
                 const auto render_started = std::chrono::steady_clock::now();
+                diagnostics::pacing::record(diagnostics::pacing::RenderStart,frame->timestamp_100ns);
                 render(*frame);
                 const auto render_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - render_started).count();
+                diagnostics::pacing::record(diagnostics::pacing::Render,frame->timestamp_100ns,
+                    static_cast<std::int64_t>(render_ms*1e6));
                 last_timestamp = frame->timestamp_100ns;
                 last_frame = frame;
                 if (requested_fps != 0) {
@@ -1597,6 +1693,10 @@ struct D3D11PreviewRenderer::Impl {
                         rendered_frames, render_ms));
                 }
             } catch (const std::exception& error) {
+                if(shared_gpu_frame && shared_gpu_frame->experimental_state) {
+                    shared_gpu_frame->experimental_state->disabled.store(true,std::memory_order_release);
+                    release_shared_gpu_frame();
+                }
                 const auto removed_reason = device
                     ? device->GetDeviceRemovedReason() : E_POINTER;
                 if (FAILED(removed_reason)) {
@@ -1618,8 +1718,8 @@ struct D3D11PreviewRenderer::Impl {
     }
 };
 
-D3D11PreviewRenderer::D3D11PreviewRenderer(HWND window, FrameProvider provider)
-    : impl_(std::make_unique<Impl>(window, std::move(provider))) {}
+D3D11PreviewRenderer::D3D11PreviewRenderer(HWND window, FrameProvider provider, bool allow_experimental)
+    : impl_(std::make_unique<Impl>(window, std::move(provider), allow_experimental)) {}
 
 D3D11PreviewRenderer::~D3D11PreviewRenderer() = default;
 

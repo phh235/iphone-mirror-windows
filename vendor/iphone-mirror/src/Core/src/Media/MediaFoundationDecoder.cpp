@@ -1,4 +1,5 @@
 #include "Media/MediaFoundationDecoder.h"
+#include "Diagnostics/FramePacing.h"
 
 #include "../Logging.h"
 
@@ -966,6 +967,7 @@ struct MediaFoundationVideoDecoder::Impl {
     // resize/screenshot consumers can retain several GPU frames at once.
     // Four slots caused constant CPU fallback under normal 60 fps rendering.
     std::array<SharedTextureSlot, 16> shared_texture_slots;
+    std::shared_ptr<DecodedFrame::GpuHandoffState> experimental_handoff;
     std::chrono::steady_clock::time_point last_pool_exhausted_log{};
     std::chrono::steady_clock::time_point last_shared_frame_log{};
     ComPtr<ID3D11Texture2D> readback_texture;
@@ -996,7 +998,13 @@ struct MediaFoundationVideoDecoder::Impl {
     bool sent_parameter_sets{};
     bool waiting_for_random_access{};
 
-    explicit Impl(DecoderPreference value) : preference(value) {}
+    explicit Impl(DecoderPreference value, bool allow_experimental_gpu) : preference(value) {
+        wchar_t enabled[2]{};
+        if(allow_experimental_gpu && GetEnvironmentVariableW(L"IPHONE_MIRROR_EXPERIMENT_GPU_HANDOFF",enabled,2)==1 && enabled[0]==L'1') {
+            experimental_handoff=std::make_shared<DecodedFrame::GpuHandoffState>();
+            logging::write("mf_decoder experimental_gpu_handoff enabled=true fallback=cpu");
+        }
+    }
 
     ~Impl() { reset_transform(); }
 
@@ -1413,11 +1421,13 @@ struct MediaFoundationVideoDecoder::Impl {
             }
         }
         const auto acquire_key = selected_slot->frame ? 1U : 0U;
-        if (selected_slot->mutex->AcquireSync(acquire_key, 1000) != WAIT_OBJECT_0)
+        // Never block the decoder on a consumer. Busy slots use CPU readback.
+        if (selected_slot->mutex->AcquireSync(acquire_key, 0) != WAIT_OBJECT_0)
             return false;
         const D3D11_BOX visible_box{0, 0, 0, format.width, format.height, 1};
         d3d_context->CopySubresourceRegion(selected_slot->texture.Get(), 0, 0, 0, 0,
             source, source_subresource, &visible_box);
+        d3d_context->Flush(); // Submit before making the consumer key available.
         if (FAILED(selected_slot->mutex->ReleaseSync(1))) return false;
 
         if (!selected_slot->frame) {
@@ -1433,6 +1443,14 @@ struct MediaFoundationVideoDecoder::Impl {
             selected_slot->frame->width = format.width;
             selected_slot->frame->height = format.height;
             selected_slot->frame->pixel_format = output_format;
+            ComPtr<IDXGIDevice> dxgi_device;
+            ComPtr<IDXGIAdapter> adapter;
+            DXGI_ADAPTER_DESC adapter_description{};
+            if(FAILED(d3d_device.As(&dxgi_device)) || FAILED(dxgi_device->GetAdapter(&adapter)) ||
+                FAILED(adapter->GetDesc(&adapter_description))) return false;
+            selected_slot->frame->adapter_luid_low=adapter_description.AdapterLuid.LowPart;
+            selected_slot->frame->adapter_luid_high=adapter_description.AdapterLuid.HighPart;
+            selected_slot->frame->experimental_state=experimental_handoff;
         }
         frame.gpu_frame = selected_slot->frame;
         frame.stride = static_cast<std::int32_t>(format.width *
@@ -1451,6 +1469,9 @@ struct MediaFoundationVideoDecoder::Impl {
 
     bool copy_dxgi_output(IMFSample* sample, DecodedFrame& frame) {
         if (!sample || !d3d_context) return false;
+        const auto pacing_dxgi_start=diagnostics::pacing::stamp();
+        LONGLONG pacing_pts{};
+        if(pacing_dxgi_start) (void)sample->GetSampleTime(&pacing_pts);
         ComPtr<IMFMediaBuffer> buffer;
         if (FAILED(sample->GetBufferByIndex(0, &buffer))) return false;
         ComPtr<IMFDXGIBuffer> dxgi_buffer;
@@ -1464,6 +1485,7 @@ struct MediaFoundationVideoDecoder::Impl {
             "get decoder DXGI output subresource");
         D3D11_TEXTURE2D_DESC description{};
         source->GetDesc(&description);
+        diagnostics::pacing::span(diagnostics::pacing::DxgiOutput,pacing_pts,pacing_dxgi_start);
         const auto expected_format = output_format == PixelFormat::P010
             ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
         if (description.Format != expected_format ||
@@ -1502,6 +1524,24 @@ struct MediaFoundationVideoDecoder::Impl {
                 description.SampleDesc.Count, detail::MaxDxgiAllocationPadding,
                 detail::MaxDxgiReadbackBytes));
         }
+        if(experimental_handoff && !experimental_handoff->disabled.load(std::memory_order_acquire)) {
+            const auto sharing_start=diagnostics::pacing::stamp();
+            bool shared=false;
+            try { shared=try_share_dxgi_output(source.Get(),source_subresource,description,frame); }
+            catch(const std::exception& error) {
+                experimental_handoff->disabled.store(true,std::memory_order_release);
+                logging::write(std::format("mf_decoder experimental_gpu_handoff fallback=cpu reason={}",error.what()));
+            }
+            diagnostics::pacing::span(diagnostics::pacing::GpuShare,pacing_pts,sharing_start,shared);
+            if(shared) {
+                saw_dxgi_output=true;
+                actual_acceleration=detail::DecoderAcceleration::Hardware;
+                selected_hardware=true;
+                acceleration_query_complete=true;
+                return true;
+            }
+            frame.gpu_frame.reset();
+        }
         if (!readback_texture || readback_format != description.Format ||
             readback_width != description.Width || readback_height != description.Height) {
             auto readback = description;
@@ -1513,18 +1553,24 @@ struct MediaFoundationVideoDecoder::Impl {
             readback.BindFlags = 0;
             readback.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             readback.MiscFlags = 0;
+            const auto pacing_create=diagnostics::pacing::stamp();
             check(d3d_device->CreateTexture2D(&readback, nullptr, &readback_texture),
                 "create decoder DXGI readback texture");
+            diagnostics::pacing::span(diagnostics::pacing::StagingCreate,pacing_pts,pacing_create);
             readback_format = description.Format;
             readback_width = description.Width;
             readback_height = description.Height;
         }
 
+        const auto pacing_copy=diagnostics::pacing::stamp();
         d3d_context->CopySubresourceRegion(readback_texture.Get(), 0, 0, 0, 0,
             source.Get(), source_subresource, nullptr);
+        diagnostics::pacing::span(diagnostics::pacing::GpuCopy,pacing_pts,pacing_copy);
         D3D11_MAPPED_SUBRESOURCE mapped{};
+        const auto pacing_map=diagnostics::pacing::stamp();
         check(d3d_context->Map(readback_texture.Get(), 0, D3D11_MAP_READ, 0, &mapped),
             "map decoder DXGI readback texture");
+        diagnostics::pacing::span(diagnostics::pacing::ReadbackMap,pacing_pts,pacing_map);
         try {
             const auto source_layout = detail::checked_dxgi_readback_layout(
                 format.width, format.height, description.Width, description.Height,
@@ -1545,12 +1591,18 @@ struct MediaFoundationVideoDecoder::Impl {
             const auto chroma_bytes = static_cast<std::size_t>(
                 (static_cast<std::uint64_t>(format.height) + 1ULL) / 2ULL) *
                 mapped.RowPitch;
+            const auto pacing_alloc=diagnostics::pacing::stamp();
             frame.nv12.reserve(visible_layout->total_bytes);
+            diagnostics::pacing::span(diagnostics::pacing::CpuAllocate,pacing_pts,pacing_alloc,
+                static_cast<std::int64_t>(visible_layout->total_bytes));
+            const auto pacing_memcpy=diagnostics::pacing::stamp();
             frame.nv12.insert(frame.nv12.end(), source_bytes, source_bytes + y_bytes);
             const auto* source_chroma = source_bytes +
                 static_cast<std::size_t>(description.Height) * mapped.RowPitch;
             frame.nv12.insert(frame.nv12.end(), source_chroma,
                 source_chroma + chroma_bytes);
+            diagnostics::pacing::span(diagnostics::pacing::CpuCopy,pacing_pts,pacing_memcpy,
+                static_cast<std::int64_t>(y_bytes+chroma_bytes));
             frame.stride = static_cast<std::int32_t>(mapped.RowPitch);
         } catch (...) {
             d3d_context->Unmap(readback_texture.Get(), 0);
@@ -1581,6 +1633,7 @@ struct MediaFoundationVideoDecoder::Impl {
             output.dwStreamID = 0;
             output.pSample = sample.Get();
             DWORD status{};
+            const auto pacing_output=diagnostics::pacing::stamp();
             const auto result = transform->ProcessOutput(0, 1, &output, &status);
             ComPtr<IMFCollection> output_events;
             if (output.pEvents) output_events.Attach(output.pEvents);
@@ -1592,6 +1645,10 @@ struct MediaFoundationVideoDecoder::Impl {
                 transform_sample.Attach(output.pSample);
             IMFSample* decoded_sample = transform_sample
                 ? transform_sample.Get() : sample.Get();
+            LONGLONG pacing_output_pts{};
+            if(pacing_output && decoded_sample) (void)decoded_sample->GetSampleTime(&pacing_output_pts);
+            diagnostics::pacing::span(diagnostics::pacing::ProcessOutput,pacing_output_pts,
+                pacing_output,static_cast<std::int64_t>(result));
             if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) return std::nullopt;
             if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
                 select_output();
@@ -1689,6 +1746,8 @@ struct MediaFoundationVideoDecoder::Impl {
 
     std::vector<DecodedFrame> decode_once(std::span<const std::uint8_t> source,
         std::int64_t timestamp, std::int64_t duration, bool random_access) {
+        diagnostics::pacing::record(diagnostics::pacing::DecodeStart,timestamp);
+        const auto pacing_annex=diagnostics::pacing::stamp();
         auto encoded = length_prefixed_to_annex_b(source, format.nalu_length_size);
         if (!sent_parameter_sets) {
             auto parameter_sets = parameter_sets_annex_b(format);
@@ -1698,6 +1757,9 @@ struct MediaFoundationVideoDecoder::Impl {
         }
         if (encoded.size() > std::numeric_limits<DWORD>::max())
             throw std::runtime_error("compressed video sample is too large");
+        diagnostics::pacing::span(diagnostics::pacing::AnnexB,timestamp,pacing_annex,
+            static_cast<std::int64_t>(encoded.size()));
+        const auto pacing_input_buffer=diagnostics::pacing::stamp();
         ComPtr<IMFSample> sample;
         ComPtr<IMFMediaBuffer> buffer;
         check(MFCreateSample(&sample), "create decoder input sample");
@@ -1716,6 +1778,8 @@ struct MediaFoundationVideoDecoder::Impl {
             "set decoder sample duration");
         if (random_access) check(sample->SetUINT32(MFSampleExtension_CleanPoint, TRUE),
             "mark decoder clean point");
+        diagnostics::pacing::span(diagnostics::pacing::DecoderInputBuffer,timestamp,pacing_input_buffer,
+            static_cast<std::int64_t>(encoded.size()));
 
         std::vector<DecodedFrame> decoded;
         if (asynchronous) {
@@ -1726,7 +1790,10 @@ struct MediaFoundationVideoDecoder::Impl {
             pump_available_async_events(decoded);
             return decoded;
         }
+        const auto pacing_input=diagnostics::pacing::stamp();
         auto input_result = transform->ProcessInput(0, sample.Get(), 0);
+        diagnostics::pacing::span(diagnostics::pacing::ProcessInput,timestamp,pacing_input,
+            static_cast<std::int64_t>(input_result));
         while (input_result == MF_E_NOTACCEPTING) {
             auto pending = receive_output();
             if (!pending) {
@@ -1811,14 +1878,14 @@ struct MediaFoundationVideoDecoder::Impl {
     }
 };
 
-MediaFoundationVideoDecoder::MediaFoundationVideoDecoder(DecoderPreference preference) {
+MediaFoundationVideoDecoder::MediaFoundationVideoDecoder(DecoderPreference preference, bool allow_experimental_gpu) {
     const auto com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(com_result) && com_result != RPC_E_CHANGED_MODE)
         check(com_result, "CoInitializeEx");
     com_initialized_ = SUCCEEDED(com_result);
     try {
         ensure_media_foundation();
-        impl_ = std::make_unique<Impl>(preference);
+        impl_ = std::make_unique<Impl>(preference, allow_experimental_gpu);
     } catch (...) {
         impl_.reset();
         if (com_initialized_) {

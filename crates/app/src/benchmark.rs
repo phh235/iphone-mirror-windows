@@ -12,6 +12,9 @@ use std::{
 /// Capture/decoder benchmark with an optional native preview. Full samples are
 /// streamed to disk; the in-memory tail stays bounded during long stress runs.
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|a| a == "--frame-pacing") {
+        return crate::usb_pacing::run(args);
+    }
     let index = args
         .iter()
         .position(|s| s == "--benchmark")

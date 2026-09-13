@@ -5,6 +5,7 @@
 #include "Transport/UsbMuxClient.h"
 
 #include "Media/MediaFoundationDecoder.h"
+#include "Diagnostics/FramePacing.h"
 #include "Audio/WasapiRenderer.h"
 #include "Logging.h"
 #include "Protocol/QuickTimePacket.h"
@@ -1651,7 +1652,7 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                             format.width, format.height));
                     }
                     video_decoder = std::make_unique<media::MediaFoundationVideoDecoder>(
-                        active_decoder_preference);
+                        active_decoder_preference, true);
                     video_decoder->configure(format, 60, 1);
                     active_decoder_runtime_mode = decoder_runtime_mode(
                         video_decoder->decoder_acceleration());
@@ -1740,7 +1741,7 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                             try {
                                 auto replacement =
                                     std::make_unique<media::MediaFoundationVideoDecoder>(
-                                        requested_preference);
+                                        requested_preference, true);
                                 replacement->configure(format, 60, 1);
                                 const bool applied = detail::trial_and_commit_decoder(
                                     decoder_switch_, requested, replacement,
@@ -1845,6 +1846,9 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                     while (input_times.size() > 512) input_times.pop_front();
                     const double decode_ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - decode_started).count();
+                    diagnostics::pacing::record(diagnostics::pacing::Decode,timestamp_100ns,
+                        static_cast<std::int64_t>(decode_ms*1e6),static_cast<std::int64_t>(decoded_frames.size()),
+                        static_cast<std::int64_t>(active_decoder_runtime_mode));
                     const bool report_decode = video_decode_count % 120 == 0 ||
                         (decode_ms >= 20.0 && video_decode_count % 30 == 1);
                     if (report_decode) {
@@ -1868,6 +1872,8 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                         published = std::make_shared<media::DecodedFrame>(std::move(decoded_frame));
                         ++video_output_count;
                         std::scoped_lock lock(mutex_);
+                        diagnostics::pacing::record(diagnostics::pacing::Publish,published->timestamp_100ns,
+                            latest_frame_?latest_frame_->timestamp_100ns:0,static_cast<std::int64_t>(video_output_count));
                         latest_frame_ = published;
                     }
                     {
@@ -2025,7 +2031,10 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                         error.what()));
                 }
             }
+            const auto pacing_read=diagnostics::pacing::stamp();
             const auto count = usb->read(read_buffer, 250);
+            diagnostics::pacing::span(diagnostics::pacing::UsbRead,0,pacing_read,
+                static_cast<std::int64_t>(count));
             video_worker_failure.rethrow_if_set();
             if (protocol.state() != quicktime::SessionState::WaitingForPing &&
                 protocol.video_frames() == 0) {
@@ -2085,7 +2094,10 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                 }
                 continue;
             }
+            const auto pacing_packets=diagnostics::pacing::stamp();
             const auto packets = decoder.push(std::span(read_buffer).first(count));
+            diagnostics::pacing::span(diagnostics::pacing::PacketBatch,0,pacing_packets,
+                static_cast<std::int64_t>(packets.size()));
             for (const auto& packet : packets) {
                 if (display_reconfigure_pending && packet.kind == quicktime::PacketKind::Async &&
                     packet.subtype == quicktime::fourcc('r', 'e', 'l', 's')) {
@@ -2157,6 +2169,9 @@ void CaptureSession::run(std::stop_token stop_token) noexcept {
                         }
                     }
                     discarded.clear();
+                    diagnostics::pacing::record(diagnostics::pacing::Queue,0,
+                        static_cast<std::int64_t>(queue_depth),static_cast<std::int64_t>(admission.dropped_samples),
+                        static_cast<std::int64_t>(queue_bytes));
                     video_worker_failure.rethrow_if_set();
                     if (queue_cancelled) break;
                     if (admission.entered_recovery) {

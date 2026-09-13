@@ -30,7 +30,7 @@ class D3D11PreviewRenderer {
 public:
     using FrameProvider = std::function<std::shared_ptr<const media::DecodedFrame>()>;
 
-    D3D11PreviewRenderer(HWND window, FrameProvider provider);
+    D3D11PreviewRenderer(HWND window, FrameProvider provider, bool allow_experimental = false);
     ~D3D11PreviewRenderer();
     D3D11PreviewRenderer(const D3D11PreviewRenderer&) = delete;
     D3D11PreviewRenderer& operator=(const D3D11PreviewRenderer&) = delete;

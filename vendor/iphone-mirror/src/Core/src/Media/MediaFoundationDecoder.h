@@ -3,6 +3,7 @@
 #include "Media/CoreMedia.h"
 
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -118,11 +119,16 @@ struct DecodedFrame {
     // Hardware decoders may publish a cross-device shared NV12/P010 texture.
     // CPU consumers can materialize nv12 on demand; the preview renderer can
     // import this handle directly and avoid a per-frame readback/upload.
+    struct GpuHandoffState { std::atomic_bool disabled{false}; };
     struct SharedGpuFrame {
         void* shared_handle{};
         std::uint32_t width{};
         std::uint32_t height{};
         PixelFormat pixel_format{PixelFormat::Nv12};
+        std::uint32_t adapter_luid_low{};
+        std::int32_t adapter_luid_high{};
+        // Consumer failure switches this decoder lifetime back to CPU.
+        std::shared_ptr<GpuHandoffState> experimental_state;
         ~SharedGpuFrame();
     };
     std::shared_ptr<const SharedGpuFrame> gpu_frame;
@@ -151,7 +157,8 @@ namespace detail {
 class MediaFoundationVideoDecoder {
 public:
     explicit MediaFoundationVideoDecoder(
-        DecoderPreference preference = DecoderPreference::Auto);
+        DecoderPreference preference = DecoderPreference::Auto,
+        bool allow_experimental_gpu = false);
     ~MediaFoundationVideoDecoder();
     MediaFoundationVideoDecoder(const MediaFoundationVideoDecoder&) = delete;
     MediaFoundationVideoDecoder& operator=(const MediaFoundationVideoDecoder&) = delete;

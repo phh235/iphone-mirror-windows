@@ -7,6 +7,8 @@
 #include "Capture/WirelessCaptureSession.h"
 #include "Capture/WirelessReceiverHub.h"
 #include "Logging.h"
+#include "Diagnostics/FramePacing.h"
+#include "Diagnostics/VisualProbe.h"
 #include "Renderer/D3D11PreviewRenderer.h"
 #include "Transport/LibUsb0Readiness.h"
 #include "Transport/Socket.h"
@@ -1714,7 +1716,7 @@ std::int32_t IM_CALL im_session_attach_preview(iPhoneMirror::SessionHandle handl
                     if (!locked) return nullptr;
                     std::shared_lock lock(locked->lifecycle_mutex);
                     return locked->capture ? locked->capture->latest_frame() : nullptr;
-                });
+                }, !context->wired_device_identity.empty());
             renderer->set_render_size_limit(context->preferences.render_max_width,
                 context->preferences.render_max_height);
             renderer->set_max_fps(context->preferences.target_fps);
@@ -2113,6 +2115,35 @@ IM_API std::int32_t IM_CALL im_session_get_render_submissions(
 }
 
 const wchar_t* IM_CALL im_last_error() { return last_error.c_str(); }
+
+// Diagnostic-only additive entry points; inactive unless explicitly started.
+IM_API std::int64_t IM_CALL im_frame_pacing_begin() {
+    try { return iPhoneMirror::diagnostics::pacing::begin(); } catch(...) { return 0; }
+}
+IM_API std::int32_t IM_CALL im_frame_pacing_end(const wchar_t* path) {
+    try { return path && iPhoneMirror::diagnostics::pacing::finish(path) ? 0 : -1; } catch(...) { return -1; }
+}
+IM_API double IM_CALL im_frame_pacing_overhead_ns() {
+    try { return iPhoneMirror::diagnostics::pacing::overhead_ns(); } catch(...) { return -1; }
+}
+IM_API std::int64_t IM_CALL im_frame_pacing_clock() { return iPhoneMirror::diagnostics::pacing::qpc(); }
+IM_API std::int64_t IM_CALL im_frame_pacing_frequency() {
+    LARGE_INTEGER value{}; QueryPerformanceFrequency(&value); return value.QuadPart;
+}
+IM_API std::int32_t IM_CALL im_visual_probe_configure(std::uint64_t window,double left,double top,double width,double height) {
+    try { return iPhoneMirror::diagnostics::visual::configure(static_cast<std::uintptr_t>(window),left,top,width,height); }
+    catch(...) { return -1; }
+}
+IM_API std::uint64_t IM_CALL im_visual_probe_arm() {
+    try { return iPhoneMirror::diagnostics::visual::arm(); } catch(...) { return 0; }
+}
+IM_API std::int32_t IM_CALL im_visual_probe_read(std::uint64_t generation,
+    iPhoneMirror::diagnostics::visual::Observation* output,std::uint32_t capacity) {
+    try { return iPhoneMirror::diagnostics::visual::read(generation,output,capacity); } catch(...) { return -1; }
+}
+IM_API void IM_CALL im_visual_probe_disable() {
+    try { iPhoneMirror::diagnostics::visual::disable(); } catch(...) {}
+}
 
 IM_API std::int32_t IM_CALL im_encoded_session_create(
     const iPhoneMirror::CaptureOptions* options,iPhoneMirror::SessionHandle* handle) {

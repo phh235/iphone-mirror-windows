@@ -2,6 +2,7 @@
 // iMirror addition: counts timestamped source samples, never UI refreshes.
 #pragma once
 #include "Media/CoreMedia.h"
+#include "Diagnostics/FramePacing.h"
 #include <array>
 #include <algorithm>
 #include <limits>
@@ -13,7 +14,7 @@ public:
     void reset() noexcept { *this = {}; }
     void observe(const coremedia::SampleBuffer& sample) noexcept {
         if (sample.sample_data.empty() || sample.sample_count == 0) return;
-        if (sample.sample_count > 1024) { ++unclocked_; return; }
+        if (sample.sample_count > 1024) { ++unclocked_; diagnostics::pacing::record(diagnostics::pacing::Unclocked,0); return; }
         for (std::uint32_t i = 0; i < sample.sample_count; ++i) {
             std::optional<std::int64_t> pts;
             std::int64_t epoch{};
@@ -36,7 +37,7 @@ public:
                     }
                 }
             }
-            if (!pts) { ++unclocked_; continue; }
+            if (!pts) { ++unclocked_; diagnostics::pacing::record(diagnostics::pacing::Unclocked,0); continue; }
             const Key key{epoch, *pts};
             if (std::find(recent_.begin(), recent_.begin() + size_, key) != recent_.begin() + size_) {
                 ++duplicates_;
@@ -46,6 +47,7 @@ public:
             next_ = (next_ + 1) % recent_.size();
             size_ = std::min(size_ + 1, recent_.size());
             ++unique_;
+            diagnostics::pacing::record(diagnostics::pacing::Source,*pts,epoch,static_cast<std::int64_t>(unique_));
         }
     }
     [[nodiscard]] std::uint64_t unique() const noexcept { return unique_; }
