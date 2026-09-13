@@ -27,6 +27,11 @@ helper and app icon resources. `target/release` contains `iMirror.exe`,
 This directory alone is not a validated distributable: USB DLL runtime requirements
 and the optional private wireless runtime must be staged correctly for end users.
 
+Optional managed WDA also needs the `WDA` directory beside the EXE. Build it with
+`scripts/prepare-wda-runtime.ps1 -Destination <staging-directory>/WDA`; this
+bootstraps a pinned Go SDK on the build host, not on the end user's machine.
+See [initial phone setup and runtime provenance](WDA_MANAGED_RUNTIME.md).
+
 The app logo comes from the checked-in ICO, so ordinary builds do not run an
 image converter. See [app icon provenance](../assets/APP_ICON.md) and
 [Fluent asset provenance](../assets/fluent/README.md) when changing artwork.

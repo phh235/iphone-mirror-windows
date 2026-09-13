@@ -155,25 +155,34 @@ software measurements, not screen-to-screen latency.
 ## Advanced WDA
 
 Enable advanced features only if you already have a signed, installed
-WebDriverAgent runner and a working local connection at `http://127.0.0.1:8100`.
+WebDriverAgent runner and have completed its developer connection setup.
 The WDA option then appears in Control settings. Phone-side signing and Developer
 Mode requirements apply; deployment uses an appropriate Apple signing identity.
 iMirror does not provide signing credentials or bundle a runner. Normal USB and
 Bluetooth Mouse operation does not need WDA. One Windows click on live Wireless
-video has been confirmed to tap the physical iPhone through WDA. Drag, typing
-and unattended runner recovery remain untested.
+video has been confirmed to tap the physical iPhone through WDA. Drag and typing
+remain untested.
 
 For the validated combination, use **Wireless video + USB for WDA**. QuickTime
-USB mirroring interrupted the WDA USB tunnel on the tested host. WDA's runner
-and tunnel currently need separate setup and supervision; they are not
-automatically deployed or renewed by iMirror.
+USB mirroring interrupted the WDA USB tunnel on the tested host. After the
+existing signed runner and private connection setup are registered, iMirror
+starts and supervises its own helpers. Leave WDA selected and Control enabled;
+reopening the app automatically reconnects. Keep the complete application folder,
+including `WDA`. Do not run the old manual helpers alongside it.
+
+The user confirmed automatic connection and a physical click after reopening.
+Initial signing, trust, Developer Mode and developer-image setup remain required;
+iMirror does not renew signing or mount the developer image after a phone reboot.
+See [setup, lifecycle and exact validation](WDA_MANAGED_RUNTIME.md).
 
 WDA is a precision automation path, not an instant mouse transport. The tested
 geometry-cache build felt slightly faster, but observed software tap dispatch
 still took about 0.6 seconds at the median. See [measured limits](WDA_PERFORMANCE_VALIDATION.md).
-If the runner or local forwarder stops, restore it, then use **Settings →
-Advanced → Connect WDA** without disconnecting Wireless video. The current build
-prevents two normal instances from competing for WDA and the release shortcut.
+If a managed helper stops, iMirror invalidates control and retries automatically.
+Wait for **Advanced control connected**; if it stays unavailable, inspect
+**Settings → Advanced → Diagnostics** for the runtime reason. The manual
+**Connect WDA** action remains available. The current build prevents two normal
+instances from competing for WDA and the release shortcut.
 
 ## Uninstall or reset
 

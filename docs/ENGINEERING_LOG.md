@@ -892,3 +892,59 @@ WDA in Advanced and confirmed input with Quality video live. Exact failure cause
 remain unknown; automatic helper lifecycle is not implemented. A later 11-tap
 window had no errors and one geometry query, median 614.651 ms dispatch. See
 WDA_PERFORMANCE_VALIDATION.md for evidence, limits and reproduction context.
+
+## 2026-09-13 — managed optional WDA runtime and reopen acceptance
+
+The previous EXE could attach to WDA but did not launch its runner, USB tunnel
+or local forwarder. Opening it after those external helpers stopped therefore
+reported Advanced control not ready. Added an optional registered runtime in
+input-wda, using a dedicated supervisor and an owned Windows kill-on-close Job.
+Its three native children use executable-relative paths and loopback listeners;
+unrelated services on those ports are left alone. Readiness and cached session
+geometry are invalidated across runtime generations, with bounded restart
+backoff and a fresh client attach. A failed/ambiguous tap is not automatically
+replayed. Advanced diagnostics distinguish runtime health from session readiness.
+
+Added the small forwarder source, pinned Go build/test script, runtime notices
+and private setup registration. The helper refreshes idle timeouts and resolves
+the current USBMux device ID for each new TCP connection. The known-working
+official go-ios binary is hash-pinned; its embedded build metadata reports a
+modified upstream revision, so it is explicitly not claimed reproducible from
+the v1.3.2 source tag. Initial signing, phone trust, Developer Mode and mounted
+developer support image remain prerequisites. No Apple binary or pairing data
+is staged for distribution. The release script now stages WDA alongside its
+notices; a full current installer/clean-machine test has not run.
+
+Commands completed with CARGO_TARGET_DIR=work/wda-managed-build:
+cargo fmt --check; cargo clippy --all-targets --all-features --locked -- -D warnings;
+cargo test --locked; cargo build --release --locked. All passed, including
+67 Rust tests. prepare-wda-runtime.ps1 tested/built the Go forwarder and collected
+runtime licenses. Windows Job ownership/cancellation tests passed. PE dependency
+inspection found system-only imports for the two WDA helpers and resolved the
+staged app's imports. No native media code changed or needed rebuilding changes.
+
+Exact accepted EXE: dist/wda-managed-20260913/iMirror.exe, 3,325,952 bytes,
+SHA-256 814fd334feca996971f710b6de90805bf6607611fe69c0a4d2da1437e48c60ee.
+Initial launch without manual helpers became ready. Terminating only the owned
+forwarder caused Not Ready then automatic Ready in about 7.5 seconds, generation
+1 to 3; no phone tap was sent during that recovery test. The user then closed
+the app, waited about two seconds and reopened this exact candidate without
+pressing Connect WDA, connected Wireless and tested Calculator. They replied
+"oke được nhé". Record automatic reopen plus physical tap as PASS on this setup.
+The old app/children were gone; one new app owned its tunnel, forwarder and runner.
+A transient client-not-ready snapshot later returned to Ready; both application
+readiness and a fresh /status check were confirmed, with no current error.
+
+The close receipt (video inactive) recorded window hiding in 3.007 ms and full
+loop exit in 193.162 ms. This does not measure active-USB shutdown. Wireless
+Quality was retained; USB/BLE/Raw Input/video/decoder/renderer source is unchanged
+by this phase. No new FPS or end-to-end latency claim is made. See
+WDA_MANAGED_RUNTIME.md for reproduction, provenance and outstanding hardware,
+reboot, signing and public-release gates.
+
+The WDA staging script also completed under Windows PowerShell 5.1 with cached
+dependencies. After the physical confirmation, nine recorded taps had zero
+failures, mean software dispatch 939.429 ms and median 851.103 ms. Conditions
+were uncontrolled; this does not establish a performance change versus the
+earlier approximately 0.6 s median. Runtime management is a reliability change,
+not a claim of faster XCTest input.

@@ -35,9 +35,17 @@ disappear. Exact native package archives are pinned in
 [msys-build-lock.json](docs/msys-build-lock.json). Their staged-file hashes and
 notices must be regenerated for an actual release, not inferred from this table.
 
-WebDriverAgent/go-ios are optional external setup tools, not bundled application
-dependencies. Apple proprietary software, credentials and non-OSI iUsbBridge
-components are excluded.
+The optional managed WDA runtime stages the MIT-licensed go-ios Windows CLI and
+the GPL-3.0-only [iMirror forwarder](vendor/wda-forwarder/README.md). The forwarder
+uses go-ios v1.3.2 through its locked Go module graph. Its staging script copies
+the Go SDK and dependency licenses into `WDA/licenses` and records exact binary
+hashes and embedded module versions in `WDA/runtime-manifest.json`. The official
+CLI asset reports modified upstream source; it is hash-pinned, not claimed to
+be rebuilt from the source tag. See [provenance and release limits](docs/WDA_MANAGED_RUNTIME.md).
+
+The signed WebDriverAgent phone runner remains a separately installed prerequisite,
+not a bundled app. Apple proprietary software, credentials, pairing records and
+non-OSI iUsbBridge components are excluded.
 
 ## Rust packages from locked Windows x64 metadata
 

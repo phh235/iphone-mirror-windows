@@ -15,9 +15,9 @@ clean-Windows public-release gate.
 | Native UI | Dark/light screenshots, app-owned five-DPI layout checks, small-window checks; supplied logo shown in main/Settings | Actual monitor changes, high contrast and 100-click physical stress remain pending |
 | Phone-shaped window and language | User confirmed portrait without side bars, Rotate landscape, fullscreen restore, language switching, proportional manual resize and reconnect refitting | [Exact geometry and build hash](WINDOW_LAYOUT_VALIDATION.md); real multi-monitor changes remain pending |
 | Wireless video | User confirmed continuous 498x1080, then sharper/smooth 664x1440 using the existing Quality preset | [Exact build and results](WDA_PERFORMANCE_VALIDATION.md); not a 60 FPS or long-run acceptance test |
-| Advanced WDA | User confirmed repeated clicks and a slight subjective improvement after geometry caching; input recovered after helper restart | Approximately 0.6 s median software dispatch in observed windows; drag, typing and unattended recovery remain untested |
+| Advanced WDA | User confirmed repeated clicks, slight improvement after geometry caching, and automatic connection plus click after reopening the managed candidate; app-owned forwarder termination recovered automatically | [Managed candidate and limits](WDA_MANAGED_RUNTIME.md); earlier median dispatch about 0.6 s; reboot, signing renewal, drag and typing remain untested |
 | Duplicate launch | A second normal launch exited 0 and retained one live iMirror instance | Only the current guarded EXE enforces this; older preview binaries do not |
-| Software checks | Current candidate passed fmt, strict Clippy, 63 Rust tests and release build; unchanged native media last passed six CTest groups | Hardware acceptance remains separate |
+| Software checks | Managed WDA candidate passed fmt, strict Clippy, 67 Rust tests, release build and the Go forwarder test; unchanged native media last passed six CTest groups | Hardware acceptance remains separate |
 | Packaged-folder launch | Latest retained app launched with system-only PATH after deleting build caches | Development PC, not a clean VM |
 
 The historical 30.056-second USB run recorded 1180×2556, 56.588 source FPS,
@@ -37,7 +37,8 @@ phone latency. No guaranteed 60 FPS, resolution or latency is claimed.
   tests with memory, handles, CPU, failures and reconnect measurements.
 - Wireless loss/reconnect, sustained performance and additional real iPhones.
   Wireless 60 FPS has not been validated.
-- Optional WDA drag/typing coverage, signing renewal and runner/tunnel lifecycle.
+- Optional WDA drag/typing, signing renewal, phone/PC reboot, developer-image setup
+  and sustained reconnect coverage; basic managed restart and reopening passed.
 - Exact installer/runtime/source-license bundle: install, launch, USB/control,
   wireless where supported, reboot, uninstall and reinstall on clean Windows.
 - Signing decision and a matching GPL corresponding-source archive before public

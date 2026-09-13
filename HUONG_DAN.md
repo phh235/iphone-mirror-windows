@@ -150,11 +150,13 @@ Xem [bản đã thử và giới hạn](docs/WIRELESS_BLACK_SCREEN_DIAGNOSIS.md)
 Nếu dùng WDA nâng cao, tổ hợp đã thử là **video Wireless + USB cho WDA**.
 Một click trên hình live đã tác động đúng lên iPhone; kéo và gõ bằng WDA chưa
 được kiểm chứng. USB QuickTime làm ngắt tunnel WDA trên máy đã thử, nên không
-dùng đồng thời hai đường USB đó. Runner/tunnel WDA hiện vẫn cần thiết lập riêng.
+dùng đồng thời hai đường USB đó. Sau khi đăng ký thiết lập WDA đã hoạt động,
+iMirror tự khởi động và quản lý runner/tunnel khi bật Control với WDA được chọn.
 WDA đã bớt một truy vấn thừa trước mỗi tap, nhưng thời gian xử lý phía phần mềm
 vẫn có trung vị khoảng 0,6 giây trong các lượt đo, nên không nhanh tức thì như
-chuột Bluetooth. Nếu runner hoặc forwarder ngắt, cần khôi phục chúng rồi chọn
-**Settings → Advanced → Connect WDA**; không cần ngắt video Wireless.
+chuột Bluetooth. Nếu helper ngắt, app tự thử phục hồi; đợi trạng thái
+**Advanced control connected**. Nếu chờ lâu, xem **Settings → Advanced → Diagnostics**;
+không cần ngắt video Wireless hay mở thêm EXE.
 Xem [kết quả và giới hạn đã đo](docs/WDA_PERFORMANCE_VALIDATION.md).
 
 ## 8. Xử lý lỗi
@@ -191,6 +193,13 @@ Developer Mode và đường chuyển tiếp cục bộ phù hợp. Việc tri�
 quan Apple signing/Apple ID hoặc tài khoản của bên ký; iMirror không cung cấp
 chứng chỉ. USB và Bluetooth Mouse thông thường không cần WDA. Xem
 [hướng dẫn WDA nâng cao](docs/USER_GUIDE.md#advanced-wda).
+
+Bản quản lý WDA đã được thử: đóng/mở lại app tự kết nối và click được trên iPhone.
+Giữ cáp USB, iPhone mở khóa, WDA được chọn và Control bật. Giữ nguyên cả thư mục
+app, gồm thư mục con `WDA`; không chạy đồng thời các helper WDA thủ công cũ.
+Việc ký/cài runner, tin cậy, Developer Mode và developer image ban đầu vẫn cần
+thiết lập riêng. App chưa tự gia hạn chữ ký hoặc gắn lại developer image sau
+khởi động lại iPhone. Xem [phạm vi tự động hóa và bản đã thử](docs/WDA_MANAGED_RUNTIME.md).
 
 Với bản đã cài: gỡ qua **Windows Settings → Apps → Installed apps → iMirror**.
 Với thư mục thử nghiệm: đóng app rồi xóa thư mục đó. Cấu hình người dùng được giữ

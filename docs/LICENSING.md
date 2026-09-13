@@ -17,6 +17,10 @@ indexes the current source dependencies; it does not certify a packaged release.
   notices. The app logo is the user-supplied repository artwork.
 - Rust dependencies carry the license expressions recorded in their manifests;
   the source index is generated from locked Windows-target Cargo metadata.
+- The optional WDA forwarder is GPL-3.0-only and uses a locked Go module graph.
+  Its staging script includes MIT go-ios and dependency notices under `WDA`.
+  The official CLI binary's modified-source metadata and outstanding provenance
+  review are documented in [WDA_MANAGED_RUNTIME.md](WDA_MANAGED_RUNTIME.md).
 - WiX and Microsoft runtime files retain separate licensing terms. Microsoft
   redistributables are staged only from the official Visual Studio redistribution
   directory; the source repository does not contain those runtime DLLs.
@@ -33,6 +37,9 @@ indexes the current source dependencies; it does not certify a packaged release.
    inspect and test the resulting archive instead of assuming generation proves
    completeness. Do not substitute an unrelated upstream source URL for the
    source matching modified distributed binaries.
+   The new forwarder's Go dependency sources also need corresponding-source
+   coverage; the existing Cargo/native archive script alone does not include
+   that Go dependency graph.
 4. Preserve the ability to replace applicable LGPL shared libraries. Keep official
    Microsoft redistribution notices and comply with their redistribution terms.
 5. Do not include Apple proprietary drivers/binaries, non-OSI iUsbBridge files,

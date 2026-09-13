@@ -1,5 +1,9 @@
 # WDA latency and Wireless Quality validation — September 12, 2026
 
+Later runtime management and reopen acceptance are recorded separately in
+[WDA_MANAGED_RUNTIME.md](WDA_MANAGED_RUNTIME.md). Measurements below describe
+the earlier candidate and are not a benchmark of that later build.
+
 Test candidate: `dist/wda-latency-20260912/iMirror.exe`, 3,268,096 bytes.
 SHA-256: `31b534857f3dd54b0a80ffe57940b7cd2e76128ba05d36158a1b50e9c0b8e0fb`.
 Phone: iPhone15,4, iOS 27.0. Video uses Wireless; WDA uses the existing USB

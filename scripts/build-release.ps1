@@ -25,15 +25,17 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'target/release/iMirror.exe'),(Join-Path $root 'target/release/libusb-1.0.dll'),(Join-Path $root 'target/release/libusb0.dll'),(Join-Path $root 'target/release/iPhoneMirror.UsbConfigurationSwitch.exe') -Destination $stage
     & (Join-Path $PSScriptRoot 'prepare-vc-runtime.ps1') -Destination $stage
     & (Join-Path $PSScriptRoot 'prepare-airplay.ps1') -Destination (Join-Path $stage 'AirPlay')
+    & (Join-Path $PSScriptRoot 'prepare-wda-runtime.ps1') -Destination (Join-Path $stage 'WDA')
     $noticeDir = Join-Path $stage 'licenses'
     Invoke-Checked python @((Join-Path $PSScriptRoot 'runtime-inventory.py'),'--runtime',(Join-Path $stage 'AirPlay'),'--output',$noticeDir)
     Copy-Item -LiteralPath (Join-Path $noticeDir 'THIRD_PARTY_LICENSES.md') -Destination $stage
+    Add-Content -LiteralPath (Join-Path $stage 'THIRD_PARTY_LICENSES.md') -Value "`nOptional WDA runtime: go-ios (MIT) and iMirror forwarder (GPL-3.0-only). See WDA/licenses and WDA/runtime-manifest.json for full notices, exact hashes and the upstream CLI source-provenance limitation. The signed phone runner and private pairing files are not bundled."
     Copy-Item -LiteralPath (Join-Path $root 'assets/fluent') -Destination (Join-Path $noticeDir 'fluent-system-icons') -Recurse
     Add-Content -LiteralPath (Join-Path $stage 'THIRD_PARTY_LICENSES.md') -Value "`nMicrosoft Fluent System Icons Regular: MIT. See licenses/fluent-system-icons/LICENSE and README.md for the pinned SVG source and attribution."
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'README.md'),(Join-Path $root 'HUONG_DAN.md'),(Join-Path $root 'docs/VALIDATION.md') -Destination $stage
     New-Item -ItemType Directory -Force (Join-Path $stage 'docs') | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'docs/VALIDATION.md') -Destination (Join-Path $stage 'docs')
-    Copy-Item -LiteralPath (Join-Path $root 'docs/USER_GUIDE.md'),(Join-Path $root 'docs/LICENSING.md') -Destination (Join-Path $stage 'docs')
+    Copy-Item -LiteralPath (Join-Path $root 'docs/USER_GUIDE.md'),(Join-Path $root 'docs/LICENSING.md'),(Join-Path $root 'docs/WDA_MANAGED_RUNTIME.md'),(Join-Path $root 'docs/WDA_PERFORMANCE_VALIDATION.md') -Destination (Join-Path $stage 'docs')
     Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.LastWriteTime.Year -lt 1980 } | ForEach-Object { $_.LastWriteTime = [DateTime]'1980-01-01' }
     $manifest = @(Get-ChildItem -LiteralPath $stage -File -Recurse | ForEach-Object {
         [ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length}

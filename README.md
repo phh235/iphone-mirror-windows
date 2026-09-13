@@ -24,7 +24,7 @@ still require validation. See [test evidence and release gates](docs/VALIDATION.
 | Windows UI | Compact native toolbar, system theme, DPI-aware controls and Fluent SVG icons |
 | Language | English / Tiếng Việt in Settings → General; saved and applied immediately |
 | Wireless | Live video confirmed on one iPhone; long-run and loss/reconnect coverage pending |
-| Advanced control | One WebDriverAgent tap through Wireless video confirmed; signed phone-side runner required |
+| Advanced control | Wireless + WDA clicks and automatic reconnect after app reopening confirmed; initial signed runner/developer setup required |
 | Audio | Disabled; this app focuses on mirroring and control |
 
 Targets: Windows 11 x64 and Windows 10 22H2 x64 where APIs/drivers permit; iOS 17+
