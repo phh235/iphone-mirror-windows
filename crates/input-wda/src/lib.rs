@@ -1,4 +1,6 @@
 //! Loopback-only WebDriverAgent client. No Appium, Python, or Node runtime.
+#[cfg(windows)]
+pub mod runtime;
 use imirror_coordinate_map::{Point, Size};
 use imirror_input_core::{Button, Controller, Input};
 use reqwest::{Method, Url, blocking::Client};

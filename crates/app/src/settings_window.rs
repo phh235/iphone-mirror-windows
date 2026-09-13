@@ -926,6 +926,8 @@ fn control_guidance(config: &Config, input: &control::Snapshot) -> &'static str 
     if config.advanced && config.control == ControlChoice::Wda {
         return if input.mode == 2 && input.ready {
             "Advanced control connected."
+        } else if input.wda_runtime.is_some() {
+            "Starting advanced control. Keep the iPhone unlocked; see Diagnostics if this continues."
         } else {
             "Advanced control is not ready. Start the signed runner and local connection; see Diagnostics."
         };

@@ -13,6 +13,9 @@ pub fn tr(english: &str) -> &str {
         return english;
     }
     match english {
+        "Starting advanced control. Keep the iPhone unlocked; see Diagnostics if this continues." => {
+            "Đang khởi động điều khiển nâng cao. Giữ iPhone mở khóa; xem Chẩn đoán nếu chờ lâu."
+        }
         "iMirror is still starting or closing. Please wait a moment." => {
             "iMirror đang mở hoặc đóng. Vui lòng đợi một chút."
         }

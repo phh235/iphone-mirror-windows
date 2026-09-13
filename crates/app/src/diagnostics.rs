@@ -160,6 +160,7 @@ fn control_value(input: &Snapshot) -> Value {
         "transition_queue_limit":imirror_input_core::relative::MAX_TRANSITIONS,"connection_interval_us":input.connection_interval_us,"pacing_interval_us":input.pacing_interval_us,
         "emergency_shortcut_available":input.emergency_shortcut_available,
         "wda":input.wda_metrics,
+        "wda_runtime":input.wda_runtime,
         "bluetooth":{"peripheral_supported":b.adapter.as_ref().map(|a|a.peripheral),"low_energy_supported":b.adapter.as_ref().map(|a|a.low_energy),
             "radio":b.adapter.as_ref().map(|a|a.radio_state.as_str()),"hid_service_created":b.hid_service_created,"advertising":b.advertising_status,
             "mouse_subscribers":b.mouse_subscribers.len(),"keyboard_subscribers":b.keyboard_subscribers.len(),

@@ -12,6 +12,7 @@ use imirror_input_core::{
     relative::{Mailbox, Packet},
 };
 use imirror_input_wda::Wda;
+use imirror_input_wda::runtime::ManagedRuntime;
 use std::{
     sync::{
         Arc,
@@ -65,6 +66,7 @@ pub struct Snapshot {
     pub transition_queue_depth: usize,
     pub diagnostics_error: Option<String>,
     pub wda_metrics: Option<serde_json::Value>,
+    pub wda_runtime: Option<serde_json::Value>,
 }
 pub struct ControlManager {
     commands: Sender<Command>,
@@ -117,20 +119,34 @@ impl ControlManager {
             let waiter=match Waiter::new(signal.clone()){Ok(waiter)=>waiter,Err(error)=>{snapshot.message=error.to_string();let _=outgoing.send(snapshot);return;}};
             snapshot.high_resolution_wait=waiter.high_resolution;
             let mut ble:Option<HidPeripheral>=None;let mut wda:Option<Wda>=None;
+            let mut managed:Option<ManagedRuntime>=None;let mut wda_epoch=0;let mut attach_at=Instant::now();
             let mut ble_wanted=false;let mut retry_at=Instant::now();let mut diagnostics_at=Instant::now();let mut publish_at=Instant::now();let mut save_at:Option<Instant>=None;
             let mut next_movement=0u64;let mut cadence_us=7_500u64;let mut completion_ema_us=0u64;
             while !stopping.load(Ordering::Acquire){
+                if let Some(runtime)=&managed{
+                    let state=runtime.status();
+                    if !state.ready || state.generation!=wda_epoch{
+                        input.ready.store(false,Ordering::Release);wda=None;snapshot.geometry=None;snapshot.mode=0;selected_backend.store(0,Ordering::Release);
+                        snapshot.message=state.message;
+                    }
+                }
                 while let Ok(command)=incoming.try_recv(){
                     if stopping.load(Ordering::Acquire){break;}
                     let result=(||->Result<(),String>{match command{
                         Command::BleStart=>{
                             if let Some(error)=&initial_error{return Err(error.clone());}
+                            drop(managed.take());
                             input.release();wda=None;snapshot.geometry=None;ble_wanted=true;retry_at=Instant::now();snapshot.ble_error=None;snapshot.mode=1;selected_backend.store(1,Ordering::Release);
                         },
                         Command::WdaConnect=>{
                             input.release();input.ready.store(false,Ordering::Release);ble_wanted=false;ble=None;wda=None;snapshot.mode=0;snapshot.geometry=None;selected_backend.store(0,Ordering::Release);
-                            let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
-                            snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();
+                            drop(managed.take());
+                            if ManagedRuntime::configured(){
+                                managed=Some(ManagedRuntime::start().map_err(|e|e.to_string())?);attach_at=Instant::now();snapshot.ble_error=None;snapshot.message="Starting advanced control. Keep the iPhone unlocked.".into();
+                            }else{
+                                let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
+                                snapshot.geometry=Some(client.geometry().map_err(|e|e.to_string())?);wda=Some(client);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();
+                            }
                         },
                         Command::RefreshGeometry=>{if let Some(wda)=&mut wda{snapshot.geometry=Some(wda.geometry().map_err(|e|e.to_string())?);}},
                         Command::BleSelect(id)=>{input.release();ble.as_mut().ok_or("Control is off")?.select(&id).map_err(|e|e.to_string())?;},
@@ -140,13 +156,28 @@ impl ControlManager {
                             input.release();input.ready.store(false,Ordering::Release);input.enabled.store(false,Ordering::Release);
                             if let Some(ble)=&mut ble{ble.release();}
                             if let Some(wda)=&mut wda{let _=wda.dispatch(Input::Release);}
+                            drop(managed.take());
                             ble=None;wda=None;ble_wanted=false;snapshot.mode=0;snapshot.ble=Diagnostics::default();snapshot.ble_clients.clear();snapshot.message="Control is off".into();selected_backend.store(0,Ordering::Release);
                         },
-                        Command::Action(action)=>{wda.as_mut().ok_or("Advanced control is not connected")?.dispatch(action).map_err(|e|e.to_string())?;}
+                        Command::Action(action)=>{if !input.ready.load(Ordering::Acquire){return Err("Advanced control is not ready. The queued action was not sent.".into());}wda.as_mut().ok_or("Advanced control is not connected")?.dispatch(action).map_err(|e|e.to_string())?;}
                     }Ok(())})();
-                    if let Err(error)=result{if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;}snapshot.message=error.clone();snapshot.ble_error=Some(error);}
+                    if let Err(error)=result{if selected_backend.load(Ordering::Acquire)==2{input.ready.store(false,Ordering::Release);snapshot.geometry=None;if managed.is_some(){wda=None;}}snapshot.message=error.clone();snapshot.ble_error=Some(error);}
                 }
                 if stopping.load(Ordering::Acquire){break;}
+                if let Some(runtime)=&managed{
+                    let state=runtime.status();
+                    if state.ready && wda.is_none() && Instant::now()>=attach_at{
+                        attach_at=Instant::now()+Duration::from_secs(2);
+                        let result=(||->Result<(Wda,Size),String>{
+                            let mut client=Wda::new("http://127.0.0.1:8100").map_err(|e|e.to_string())?;
+                            let size=client.geometry().map_err(|e|e.to_string())?;
+                            let current=runtime.status();if !current.ready || current.generation!=state.generation{return Err("WDA restarted while connecting. Retrying.".into());}
+                            Ok((client,size))
+                        })();
+                        match result{Ok((client,size))=>{wda=Some(client);wda_epoch=state.generation;snapshot.geometry=Some(size);snapshot.mode=2;selected_backend.store(2,Ordering::Release);input.ready.store(true,Ordering::Release);snapshot.ble_error=None;snapshot.message="Advanced control connected".into();},Err(error)=>{snapshot.ble_error=Some(error.clone());snapshot.message=error;}}
+                    }
+                    snapshot.wda_runtime=Some(runtime.diagnostics());
+                }else{snapshot.wda_runtime=None;}
                 if ble_wanted && ble.is_none() && Instant::now()>=retry_at{
                     match HidPeripheral::start(&mut snapshot.ble){Ok(mut service)=>{let wake=signal.clone();service.set_waker(Arc::new(move||wake.pulse()));service.set_invalidation_handler(invalidation.clone());ble=Some(service);diagnostics_at=Instant::now();snapshot.ble_error=None;},Err(error)=>{snapshot.ble_error=Some(error.to_string());snapshot.message=error.to_string();retry_at=Instant::now()+Duration::from_secs(3);}}
                 }
@@ -214,6 +245,7 @@ impl ControlManager {
             input.release();input.ready.store(false,Ordering::Release);
             drop(ble.take()); // Drop sends neutral reports and stops advertising once.
             if let Some(wda)=&mut wda{let _=wda.dispatch(Input::Release);}
+            drop(managed.take());
             if writable{let _=crate::pointer_settings::save(input.sensitivity.load(Ordering::Relaxed));}
         })?;
         Ok(Self {
