@@ -37,9 +37,11 @@ indexes the current source dependencies; it does not certify a packaged release.
    inspect and test the resulting archive instead of assuming generation proves
    completeness. Do not substitute an unrelated upstream source URL for the
    source matching modified distributed binaries.
-   The new forwarder's Go dependency sources also need corresponding-source
-   coverage; the existing Cargo/native archive script alone does not include
-   that Go dependency graph.
+   Pass `--runtime <exact-stage> --go <pinned-go.exe>` to the source packager to
+   include the forwarder's locked Go dependency sources and module-download
+   archives. A legacy invocation without these arguments is insufficient for
+   a release containing the forwarder. The MIT upstream go-ios CLI has separate
+   provenance limits; its dirty source revision is not claimed reconstructed.
 4. Preserve the ability to replace applicable LGPL shared libraries. Keep official
    Microsoft redistribution notices and comply with their redistribution terms.
 5. Do not include Apple proprietary drivers/binaries, non-OSI iUsbBridge files,

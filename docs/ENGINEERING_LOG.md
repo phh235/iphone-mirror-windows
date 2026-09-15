@@ -1228,3 +1228,34 @@ The stable tag still resolves to bfa4784; stable EXE remains c577805d...db0.
 No merge, tag change or stable-binary replacement. Expired signing, locked phone,
 Trust/Developer Mode requirements, image incompatibility after iOS updates and
 long-run/clean-machine gates still require their corresponding validation/action.
+
+## 2026-09-15 — portable distribution preparation
+
+User requested a ZIP for GitHub Releases and complete Bluetooth/WDA instructions.
+Kept the physically accepted WDA recovery EXE unchanged (4aaffa975e...2fc6c3).
+Added bilingual portable and WDA setup guides, offline HTML generation, official
+Sideloadly links and a double-click registration wrapper using built-in PowerShell.
+No redistribution grant for Sideloadly was found on its official download/FAQ
+pages; its installer is not included. Neither Apple developer images/drivers nor
+signed IPA, pairing records, Apple credentials or local user settings are bundled.
+Initial WDA provisioning remains user-specific, not a plug-and-play guarantee.
+
+New portable packager selects runtime files explicitly, checks the validated EXE
+and Rust source hashes, audits all 83 PE binaries, creates file hashes and tests
+ZIP integrity. The source packager now includes locked forwarder Go module sources
+and download archives in addition to native and Cargo sources, using a temporary
+Go module to avoid changing go.sum. Exact reconstruction of the separately
+distributed MIT upstream go-ios dirty-revision asset is not claimed.
+
+Repeated fmt, strict Clippy, 82 default tests, 26 overlapping WDA feature tests
+and release build passed, with the same EXE hash. Documentation check and license
+index check passed. The trial ZIP's extracted app passed native UI startup and
+AirPlay startup/shutdown with a fresh LocalAppData/Temp and Windows-only PATH;
+the outer local test harness then hit an unset LASTEXITCODE variable, after both
+checks passed. Corrected only that harness; final ZIP requires its own verification.
+
+WindowsSandbox.exe is absent on this host. No clean-machine, installer, new
+Bluetooth hardware or complete fresh-user WDA setup PASS is claimed. Prepare
+GitHub release v0.1.0-preview.1 as a draft, retaining the stable checkpoint/binary
+and main branch. Release metadata/checksums and final extraction results belong
+with the assets; a draft is not yet a public user download.

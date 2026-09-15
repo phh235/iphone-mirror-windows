@@ -50,6 +50,31 @@ GitHub Actions runs the source checks and Windows build. CI has no physical
 iPhone and cannot certify USB, Bluetooth, wireless or clean-machine usability.
 No workflow automatically publishes a release from these checks.
 
+## Package an already validated portable build
+
+The portable packager preserves the exact EXE and runtime bytes from a named
+hardware-tested staging folder. It checks the expected EXE hash, recorded Rust
+source hashes, native imports and ZIP CRCs. Use Python 3.12+ and MSVC dumpbin on
+the packaging host only. Output must be a new directory under dist; old stages
+and checkpoints are never overwritten.
+
+```powershell
+python scripts/package-portable.py --validated-stage dist/wda-recovery-20260915 --expected-exe-sha256 4aaffa975e13580c584fa9d1974952367e7a91713ab151fa56cee1b1cd2fc6c3 --output-dir dist/release-0.1.0-preview.1 --dumpbin "C:\path\to\MSVC\bin\Hostx64\x64\dumpbin.exe"
+python scripts/package-source.py --runtime dist/release-0.1.0-preview.1/iMirror --go "C:\path\to\pinned-Go\bin\go.exe" --output dist/release-0.1.0-preview.1/iMirror-v0.1.0-corresponding-source.zip
+```
+
+The Go compiler version is pinned by prepare-wda-runtime.ps1. Package source
+after committing intended source changes: its inventory is git ls-files, excluding
+work, dist, pairing and credentials. Untracked source is deliberately not guessed.
+Native source archives and module sources are downloaded and hash/lock checked.
+The separate official go-ios MIT EXE still has its disclosed dirty-revision limit.
+
+Extract the final ZIP, verify files.sha256.json and run scripts/verify-package.ps1
+with PackageDirectory pointing to the extracted iMirror folder. Use a temporary
+LOCALAPPDATA/TEMP and a Windows-only PATH for isolation. A test on a development
+host is not a clean-machine test. Keep the GitHub Release as a draft until its
+clean-Windows gates have been checked; do not silently label a preview stable.
+
 For the C++ protocol/native tests, install CMake and run:
 
 ```powershell

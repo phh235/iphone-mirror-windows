@@ -16,7 +16,9 @@ try {
     }
     if (-not $SkipAirPlayBuild) { & (Join-Path $PSScriptRoot 'build-airplay.ps1') }
     Invoke-Checked cargo @('build','--release','--locked')
-    $version = '0.1.0'
+    $versionMatch = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'Cargo.toml') -Raw), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $versionMatch.Success) { throw 'Workspace SemVer is missing.' }
+    $version = $versionMatch.Groups[1].Value
     # Each invocation gets a fresh staging tree; no stale files are harvested.
     $build = Join-Path $root ('work/package-' + [Guid]::NewGuid().ToString('N'))
     $stage = Join-Path $build 'iMirror'
@@ -61,8 +63,8 @@ try {
     $stage | Set-Content -LiteralPath (Join-Path $dist 'latest-stage.txt')
     $artifacts = @($msi,$setup,$portable)
     if (-not $SkipSourcePackage) {
-        Invoke-Checked python @((Join-Path $PSScriptRoot 'package-source.py'))
-        $artifacts += Join-Path $dist 'iMirror-0.1.0-source.zip'
+        Invoke-Checked python @((Join-Path $PSScriptRoot 'package-source.py'),'--runtime',$stage,'--go',(Join-Path $root 'work/wda-runtime-build/go/bin/go.exe'))
+        $artifacts += Join-Path $dist "iMirror-$version-source.zip"
     }
     $lines = foreach ($artifact in $artifacts) { (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetFileName($artifact) }
     $lines | Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt') -Encoding ascii
