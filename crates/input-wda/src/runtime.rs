@@ -1,6 +1,8 @@
 //! Optional, registered WDA runtime. Never signs/installs a phone app or changes USB drivers.
+mod startup;
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
+pub use startup::StartupIssue;
 use std::{
     collections::VecDeque,
     fs,
@@ -34,6 +36,12 @@ pub enum RuntimeError {
         "WDA {0} did not become ready. Check the iPhone's USB trust, Developer Mode and developer support image."
     )]
     Timeout(&'static str),
+    #[error(transparent)]
+    Startup(#[from] StartupIssue),
+    #[error("WDA setup was cancelled.")]
+    Cancelled,
+    #[error("WDA {0} returned too much diagnostic data.")]
+    ExcessiveOutput(&'static str),
     #[error("WDA runtime I/O failed: {0}")]
     Io(#[from] io::Error),
     #[error("Windows could not supervise the WDA runtime: {0}")]
@@ -42,6 +50,7 @@ pub enum RuntimeError {
 struct Setup {
     device: String,
     bundle: String,
+    developer_image: Option<PathBuf>,
 }
 impl Setup {
     fn parse(bytes: &[u8]) -> Result<Self, RuntimeError> {
@@ -67,9 +76,17 @@ impl Setup {
         {
             return Err(RuntimeError::InvalidSetup);
         }
+        let developer_image = match value.get("developer_image_restore") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(path)) if startup::valid_local_path(path) => {
+                Some(PathBuf::from(path))
+            }
+            _ => return Err(RuntimeError::InvalidSetup),
+        };
         Ok(Self {
             device: device.to_owned(),
             bundle: bundle.to_owned(),
+            developer_image,
         })
     }
 }
@@ -84,8 +101,24 @@ struct Shared {
     events: Mutex<VecDeque<String>>,
     stopped: Mutex<bool>,
     wake: Condvar,
+    startup_issue: Mutex<Option<StartupIssue>>,
+    preparation: Mutex<startup::Preparation>,
 }
 impl Shared {
+    fn new(image_registered: bool) -> Self {
+        Self {
+            status: Mutex::new(Status {
+                ready: false,
+                generation: 0,
+                message: "Starting advanced control. Keep the iPhone unlocked.".into(),
+            }),
+            events: Mutex::new(VecDeque::with_capacity(16)),
+            stopped: Mutex::new(false),
+            wake: Condvar::new(),
+            startup_issue: Mutex::new(None),
+            preparation: Mutex::new(startup::Preparation::new(image_registered)),
+        }
+    }
     fn publish(&self, ready: bool, message: &str) {
         let mut s = self.status.lock().unwrap_or_else(|e| e.into_inner());
         if s.ready != ready {
@@ -106,6 +139,9 @@ impl Shared {
         *self.stopped.lock().unwrap_or_else(|e| e.into_inner())
     }
     fn event(&self, component: &str, text: &str) {
+        if let Some(issue) = startup::classify_issue(component, text) {
+            *self.startup_issue.lock().unwrap_or_else(|e| e.into_inner()) = Some(issue);
+        }
         let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         if events.len() == 16 {
             events.pop_front();
@@ -120,11 +156,18 @@ fn safe_message(line: &str) -> String {
         .as_ref()
         .and_then(|v| v["msg"].as_str())
         .unwrap_or("WDA helper diagnostic received");
+    if text.to_ascii_lowercase().contains("private key")
+        || text.to_ascii_lowercase().contains("pair record")
+        || text.to_ascii_lowercase().contains("shared secret")
+    {
+        return "Private helper detail omitted".into();
+    }
     text.split_whitespace()
         .take(40)
         .map(|word| {
             if word.contains('@')
                 || word.contains(":\\")
+                || word.len() >= 48
                 || word.bytes().filter(u8::is_ascii_hexdigit).count() >= 12
             {
                 "[identifier omitted]".to_owned()
@@ -159,16 +202,7 @@ impl ManagedRuntime {
             return Err(RuntimeError::MissingRuntime);
         }
         fs::create_dir_all(data.join("pairing"))?;
-        let shared = Arc::new(Shared {
-            status: Mutex::new(Status {
-                ready: false,
-                generation: 0,
-                message: "Starting advanced control. Keep the iPhone unlocked.".into(),
-            }),
-            events: Mutex::new(VecDeque::with_capacity(16)),
-            stopped: Mutex::new(false),
-            wake: Condvar::new(),
-        });
+        let shared = Arc::new(Shared::new(setup.developer_image.is_some()));
         let worker = shared.clone();
         let thread = thread::Builder::new()
             .name("imirror-wda-runtime".into())
@@ -187,8 +221,20 @@ impl ManagedRuntime {
     }
     pub fn diagnostics(&self) -> Value {
         let s = self.status();
+        let issue = *self
+            .shared
+            .startup_issue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let preparation = self
+            .shared
+            .preparation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .json();
         let events = self.shared.events.lock().unwrap_or_else(|e| e.into_inner());
-        json!({"managed":true,"ready":s.ready,"generation":s.generation,"message":s.message,"events":&*events})
+        json!({"managed":true,"ready":s.ready,"generation":s.generation,"message":s.message,"events":&*events,
+            "startup_issue":issue.map(|i|i.code()),"developer_image":preparation})
     }
 }
 impl Drop for ManagedRuntime {
@@ -336,7 +382,12 @@ fn drain(mut reader: impl Read, name: &str, shared: Arc<Shared>) {
     let mut oversized = false;
     loop {
         let n = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => {
+                if !oversized && !line.is_empty() {
+                    shared.event(name, &String::from_utf8_lossy(&line));
+                }
+                break;
+            }
             Ok(n) => n,
         };
         for &byte in &chunk[..n] {
@@ -409,6 +460,17 @@ fn run_once(
         "--tunnel-info-host=127.0.0.1".into(),
         "--tunnel-info-port=28100".into(),
     ];
+    if let Err(error) = startup::prepare(setup, &ios, shared) {
+        shared
+            .preparation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .failed();
+        return Err(error);
+    }
+    if shared.cancelled() {
+        return Ok(());
+    }
     let mut args = vec![
         "tunnel".into(),
         "start".into(),
@@ -464,6 +526,10 @@ fn run_once(
     )? {
         return Ok(());
     }
+    *shared
+        .startup_issue
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
     shared.publish(true, "Advanced control runtime ready.");
     let mut misses = 0;
     while !shared.wait(Duration::from_secs(2)) {
@@ -495,6 +561,15 @@ fn supervise(setup: Setup, runtime: PathBuf, data: PathBuf, shared: Arc<Shared>)
     };
     let mut failures = 0usize;
     while !shared.cancelled() {
+        *shared
+            .startup_issue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        shared
+            .preparation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset_check();
         shared.publish(
             false,
             "Starting advanced control. Keep the iPhone connected and unlocked.",
@@ -506,7 +581,22 @@ fn supervise(setup: Setup, runtime: PathBuf, data: PathBuf, shared: Arc<Shared>)
             break;
         }
         if let Err(error) = result {
-            shared.publish(false, &error.to_string());
+            let issue = match &error {
+                RuntimeError::Startup(issue) => Some(*issue),
+                _ => *shared
+                    .startup_issue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            };
+            if let Some(issue) = issue {
+                *shared
+                    .startup_issue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(issue);
+                shared.publish(false, &issue.to_string());
+            } else {
+                shared.publish(false, &error.to_string());
+            }
         }
         if start.elapsed() > Duration::from_secs(60) {
             failures = 0;
@@ -526,16 +616,7 @@ fn retry_delay(attempt: usize) -> Duration {
 mod tests {
     use super::*;
     fn shared() -> Arc<Shared> {
-        Arc::new(Shared {
-            status: Mutex::new(Status {
-                ready: false,
-                generation: 0,
-                message: String::new(),
-            }),
-            events: Mutex::new(VecDeque::new()),
-            stopped: Mutex::new(false),
-            wake: Condvar::new(),
-        })
+        Arc::new(Shared::new(false))
     }
     #[test]
     fn cancellation_wakes_backoff_and_readiness_changes_epoch()
@@ -604,6 +685,13 @@ mod tests {
     fn setup_rejects_missing_or_injected_identifiers() {
         let valid = json!({"version":1,"device_id":"00000000-0000000000000000","runner_bundle_id":"com.example.WDARunner"});
         assert!(Setup::parse(valid.to_string().as_bytes()).is_ok());
+        let mut with_image = valid.clone();
+        with_image["developer_image_restore"] = json!(r"C:\Apple Images\Restore");
+        assert!(Setup::parse(with_image.to_string().as_bytes()).is_ok());
+        for path in [r"\\server\share", "relative", "C:\\bad\n--argument"] {
+            with_image["developer_image_restore"] = json!(path);
+            assert!(Setup::parse(with_image.to_string().as_bytes()).is_err());
+        }
         for (key, bad) in [
             ("device_id", "--help"),
             ("runner_bundle_id", "bad bundle\n--env=bad"),
@@ -621,5 +709,21 @@ mod tests {
             safe_message(r#"{"msg":"Failed device 00000000-0000000000000000","udid":"private"}"#);
         assert!(!text.contains("00000000"));
         assert!(!text.contains("private"));
+    }
+    #[test]
+    fn final_unterminated_log_line_retains_only_a_safe_failure_category() {
+        let state = shared();
+        drain(&br#"{"msg":"Failed running WDA","error":"DeviceLocked for secret-phone","pairRecord":"private-key-material"}"#[..], "runner", state.clone());
+        assert_eq!(
+            *state
+                .startup_issue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            Some(StartupIssue::DeviceLocked)
+        );
+        let events = state.events.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].contains("secret-phone"));
+        assert!(!events[0].contains("private-key-material"));
     }
 }

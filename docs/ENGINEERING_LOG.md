@@ -1159,3 +1159,72 @@ License -Check passed for all 105 Cargo packages on PowerShell 5 and 7, and the
 documentation check passed (33 Markdown files / 121 local links). Application,
 media, BLE/WDA behavior and existing EXE bytes were not modified by this fix.
 The subsequent CI result must be observed separately; no hardware PASS inferred.
+
+## 2026-09-15 — WDA startup restored after missing developer image
+
+User reported native clicks rejected before enqueue, with the managed tunnel
+connected but the runner repeatedly exiting. Read-only checks found the
+registered USB phone connected, iOS 27.0/build 24A437, DeveloperModeEnabled=true,
+and go-ios image list returned `none`. The current manager starts the tunnel
+and signed runner but does not mount developer support images automatically.
+
+Mounted the existing private cached Apple image (manifest build 27A5228h) from
+its Restore directory. go-ios obtained a new personalization signature from
+Apple TSS and reported success. No Apple credentials were supplied, no app was
+re-signed/reinstalled, and no Windows USB driver or Developer Mode setting changed.
+Opened one existing experimental EXE with all optimization flags OFF. PID 11808
+then reported backend=2, ready=true, no error; managed runtime generation=1 and
+runner authorized. This restores WDA readiness; asked the user to verify one
+physical click over Wireless before claiming the input test passed.
+
+No application/mirroring code was changed. Private recovery evidence is under
+work/wda-recovery-20260915; pairing/signing material was not copied into source.
+Automatic developer-image mounting after phone reboot/update remains unimplemented,
+so this recovery does not claim the recurrence is permanently fixed.
+
+The user then confirmed: "Đã nhận click, điều khiển lại được" after reconnecting
+Wireless and testing a Calculator click. Record this recovery plus physical WDA
+click as PASS for the opened EXE (0fa26928...f30d4bfde4), default 50 ms contact,
+M3/T10 OFF. This is not a new latency benchmark, a separate M3/T10 acceptance,
+or proof of automatic recovery after another phone reboot.
+
+## 2026-09-15 — automatic developer-image recovery and physical acceptance
+
+On branch fix/wda-developer-image-recovery, added WDA-only startup preparation
+before tunnel/runner startup. The manager checks Developer Mode and mounted image
+state using the existing go-ios helper. Missing images are mounted from a privately
+registered local Restore directory and the result is verified before continuing.
+No download, signing, driver installation or phone security-setting change is
+performed. Old setup registrations remain valid when an image is already mounted.
+
+Preparation helpers use an owned Windows Job, bounded 64 KiB output streams,
+10-second query/120-second mount deadlines and cancellable waits. Known failures
+map to fixed user-action messages without exporting pairing fields or signatures.
+Tests cover actual child cancellation/timeout cleanup, strict image/Developer Mode
+parsing, bounded output, error classification and local path validation. Source
+changes are runtime.rs, its new runtime/startup.rs, registration script and docs.
+No media, BLE, Raw Input or ControlManager implementation changes.
+
+Validation: fmt, strict all-target/all-feature Clippy, 82 default Rust tests,
+26 WDA all-feature tests (overlapping default tests), release build and docs check
+passed. Staged dist/wda-recovery-20260915/iMirror.exe, 3,490,304 bytes, SHA256
+4aaffa975e13580c584fa9d1974952367e7a91713ab151fa56cee1b1cd2fc6c3.
+All 82 other runtime binaries match the previous stage. EXE PE imports resolve
+from the private folder or Windows system/API-set libraries; no new dependencies.
+This is not an installer or clean-machine test.
+
+Registered the existing compatible image cache, without exposing identifiers.
+Initial process 33772 became Ready with mount_attempts=0 as the image was already
+mounted. That process exited before the phone test, so its watcher recorded no
+reboot transition. After the user reported restart, reopened process 6792 showed
+mount_attempts=1, successful_mounts=1, image=mounted, generation=1, backend=2,
+runtime/application ready=true and no error. The user confirmed a real Wireless
+Calculator click: "Có, iPhone nhận click". PASS: automatic image preparation and
+physical WDA input on a new app process after user-reported phone restart.
+Evidence: local work/wda-recovery-20260915/reboot-result.json. Do not claim an
+observed full transition sequence, same-process reboot recovery or Windows reboot.
+
+The stable tag still resolves to bfa4784; stable EXE remains c577805d...db0.
+No merge, tag change or stable-binary replacement. Expired signing, locked phone,
+Trust/Developer Mode requirements, image incompatibility after iOS updates and
+long-run/clean-machine gates still require their corresponding validation/action.

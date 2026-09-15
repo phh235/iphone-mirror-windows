@@ -1,4 +1,4 @@
-# Managed WDA runtime — September 13, 2026
+# Managed WDA runtime
 
 This optional advanced backend starts the existing signed WDA runner and its
 Windows connection when Control is enabled with WDA selected. It does not sign
@@ -24,15 +24,17 @@ mirroring disrupted WDA's USB connection in earlier physical tests.
 - A signed, installed and trusted WebDriverAgent runner on the phone, with
   Developer Mode enabled and a valid signing profile.
 - Apple's compatible Windows USB device stack, USB trust and developer pairing.
-- The matching developer support image already mounted. The current manager
-  does not download or mount it; phone reboot/update may require setup again.
+- A compatible Apple developer support image already mounted, or its local
+  `Restore` directory registered for automatic preparation. The manager checks
+  image state on each startup/reconnect attempt and mounts the registered cache
+  when missing. It does not download images or guess a replacement after an iOS update.
 - Private registration of the phone identifier and installed runner bundle ID.
 
 For an already working setup, close iMirror and run the development-side command
 with the actual identifiers from that setup:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/register-wda-runtime.ps1 -DeviceId "<device identifier>" -RunnerBundleId "<installed signed bundle identifier>" -PairingSource "<existing pairing directory>"
+powershell -ExecutionPolicy Bypass -File scripts/register-wda-runtime.ps1 -DeviceId "<device identifier>" -RunnerBundleId "<installed signed bundle identifier>" -PairingSource "<existing pairing directory>" -DeveloperImagePath "C:\path\to\Apple-image\Restore"
 ```
 
 The placeholders are not real values. Registration stores `setup.json` and
@@ -40,6 +42,37 @@ pairing data under `%LOCALAPPDATA%\iMirror\wda`; these are private machine data,
 never release assets or Git content. It does not read an Apple password, sign an
 IPA, install an app, renew a profile or change Windows drivers. Without registered
 setup, the manual advanced client at `http://127.0.0.1:8100` remains available.
+
+`-DeveloperImagePath` registers the existing local Apple image, not a bundled
+asset. It must be a directory containing `BuildManifest.plist`; filesystem links
+and network paths are rejected. Omitting the parameter while updating the same
+phone's setup preserves an existing registration. The image files stay private
+and are not copied into the installer. Older registrations still work if the
+image is already mounted; otherwise an explicit missing-image message is shown.
+
+## Recovery after restart
+
+When WDA is enabled, the background supervisor checks Developer Mode and the
+mounted-image signature list before starting the tunnel/runner. If the image is
+missing, it uses the registered Restore directory, then checks the mounted state
+again. Only after WDA's server and application session are established may Control
+become Ready. A registered path by itself is not readiness.
+
+Image preparation uses a bounded, cancellable native helper process. Queries
+have a 10-second deadline; mounting has a 120-second deadline and may contact
+Apple's personalization service. Closing the app cancels preparation through
+its owned process Job. The UI, video and Raw Input threads do not perform the work.
+
+Diagnostics expose image state and mount counters without image paths,
+signatures or private pairing data. Known helper failures are classified into
+unlock, Developer Mode, pairing, runner signing/installation, or image-setup
+issues instead of treating all failures as a generic runner disconnect.
+
+This cannot bypass phone passcodes, Trust prompts, Developer Mode, expired or
+revoked signing profiles, or an incompatible image after an iOS update. Those
+conditions need the corresponding user/setup action. Reboot recovery must be
+validated on the exact build and phone; automatic preparation code alone is not
+a hardware PASS.
 
 ## Implementation and build
 
@@ -80,7 +113,28 @@ for that upstream EXE; provenance and corresponding-source review remain public
 release gates. No Apple binaries, signed phone runner or private pairing files
 are included in the staged runtime.
 
-## Exact candidate and evidence
+## Developer-image recovery candidate (2026-09-15)
+
+- Candidate: `dist/wda-recovery-20260915/iMirror.exe`, 3,490,304 bytes.
+- SHA-256: `4aaffa975e13580c584fa9d1974952367e7a91713ab151fa56cee1b1cd2fc6c3`.
+- fmt, strict all-target/all-feature Clippy, 82 default Rust tests, 26 WDA
+  all-feature tests and release build passed. The 26 overlap the default suite;
+  they are not 26 additional unique tests. Documentation checks also passed.
+- With the image already mounted, this EXE became Ready with zero mount attempts.
+- After the user reported restarting the iPhone and reopened the candidate,
+  the new process reported one mount attempt, one successful mount, image
+  `mounted`, runtime/application Ready and no startup issue. The user then
+  confirmed a real Calculator click over Wireless: "Có, iPhone nhận click".
+  Record automatic preparation plus physical click as PASS for this exact setup.
+- The old process exited before the reboot observation. This tests a new app
+  process after phone restart, not recovery while keeping the same app process
+  open. Windows reboot, signing expiry, incompatible images, sustained recovery
+  and clean-machine installation remain untested.
+- Runtime binaries match the previous stage, except the new application EXE.
+  Mirroring, BLE, Raw Input and rendering source are unchanged. Stable checkpoint
+  and stable EXE are preserved. This is an unsigned test candidate.
+
+## Earlier managed-runtime candidate and evidence (2026-09-13)
 
 - Candidate: `dist/wda-managed-20260913/iMirror.exe`, 3,325,952 bytes.
 - SHA-256: `814fd334feca996971f710b6de90805bf6607611fe69c0a4d2da1437e48c60ee`.
@@ -114,7 +168,7 @@ uncontrolled sample is not a comparable performance benchmark; do not attribute
 an input-latency improvement to runtime management. It does not measure the
 physical display response.
 
-Still untested: phone/PC reboot, fresh driver or developer-image setup, signing
+Untested on that earlier candidate: phone/PC reboot, fresh driver or developer-image setup, signing
 expiry/renewal, sustained cable-loss recovery, WDA drag/typing and a clean-Windows
 installer. This is an unsigned engineering candidate, not a public release.
 
