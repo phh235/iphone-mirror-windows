@@ -154,6 +154,10 @@ software measurements, not screen-to-screen latency.
 
 ## Advanced WDA
 
+For first-time setup, use the [complete Windows WDA guide](WDA_SETUP.en.md),
+including Sideloadly, Developer Mode, developer-image registration and a real
+click test. For ZIP installation, see the [portable guide](PORTABLE.en.md).
+
 Enable advanced features only if you already have a signed, installed
 WebDriverAgent runner and have completed its developer connection setup.
 The WDA option then appears in Control settings. Phone-side signing and Developer

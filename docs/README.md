@@ -2,6 +2,9 @@
 
 ## Using the app
 
+- [Portable ZIP: Tiếng Việt](PORTABLE.vi.md) / [English](PORTABLE.en.md)
+- [WDA setup: Tiếng Việt](WDA_SETUP.vi.md) / [English](WDA_SETUP.en.md)
+
 - [Vietnamese guide](../HUONG_DAN.md)
 - [English guide](USER_GUIDE.md)
 - [Current validation and release gates](VALIDATION.md)

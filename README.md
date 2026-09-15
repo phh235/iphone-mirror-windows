@@ -38,13 +38,18 @@ show black bars. Explicit 1:1 and Fill selections are retained.
 
 ## Start using iMirror
 
-The intended public download is a single Setup EXE. Use an installer only when
-its [release notes](https://github.com/phh235/iphone-mirror-windows/releases)
-identify that exact package and its validation status. Current source and local
-engineering builds must not be presented as a clean-machine-tested release.
+The current distribution being prepared is a **portable ZIP**. See
+[release notes](https://github.com/phh235/iphone-mirror-windows/releases) for its
+exact validation status. Extract everything and open `START-HERE.html` or
+`iMirror.exe`. Draft releases are visible only to repository collaborators.
+No current ZIP is claimed to have passed clean-Windows validation.
+
+[Portable guide — Tiếng Việt](docs/PORTABLE.vi.md) ·
+[Portable guide — English](docs/PORTABLE.en.md) ·
+[WDA setup — Tiếng Việt](docs/WDA_SETUP.vi.md) · [WDA setup — English](docs/WDA_SETUP.en.md)
 
 For a supplied engineering app folder, keep **all** files beside `iMirror.exe`,
-including the USB helpers, DLLs, licenses and `AirPlay` directory. Do not copy the
+including the USB helpers, DLLs, licenses and `AirPlay`/`WDA` directories. Do not copy the
 EXE alone. A fresh Git checkout contains source, not a prebuilt application.
 
 1. Connect the unlocked iPhone by USB and accept **Trust This Computer**.

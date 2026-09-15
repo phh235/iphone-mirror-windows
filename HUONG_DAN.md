@@ -202,8 +202,10 @@ Bản quản lý WDA đã được thử: đóng/mở lại app tự kết nối
 Giữ cáp USB, iPhone mở khóa, WDA được chọn và Control bật. Giữ nguyên cả thư mục
 app, gồm thư mục con `WDA`; không chạy đồng thời các helper WDA thủ công cũ.
 Việc ký/cài runner, tin cậy, Developer Mode và developer image ban đầu vẫn cần
-thiết lập riêng. App chưa tự gia hạn chữ ký hoặc gắn lại developer image sau
-khởi động lại iPhone. Xem [phạm vi tự động hóa và bản đã thử](docs/WDA_MANAGED_RUNTIME.md).
+thiết lập riêng. Bản recovery tự gắn lại developer image tương thích đã được đăng
+ký khi bị thiếu; app không tự tải image hay gia hạn chữ ký. Xem
+[thiết lập WDA từng bước](docs/WDA_SETUP.vi.md) và
+[phạm vi tự động hóa và bản đã thử](docs/WDA_MANAGED_RUNTIME.md).
 
 Với bản đã cài: gỡ qua **Windows Settings → Apps → Installed apps → iMirror**.
 Với thư mục thử nghiệm: đóng app rồi xóa thư mục đó. Cấu hình người dùng được giữ
