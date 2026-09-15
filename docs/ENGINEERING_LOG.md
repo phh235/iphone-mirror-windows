@@ -1259,3 +1259,24 @@ Bluetooth hardware or complete fresh-user WDA setup PASS is claimed. Prepare
 GitHub release v0.1.0-preview.1 as a draft, retaining the stable checkpoint/binary
 and main branch. Release metadata/checksums and final extraction results belong
 with the assets; a draft is not yet a public user download.
+
+## 2026-09-15 — authorized public preview and main integration
+
+The user explicitly requested publication and merging all current work into main.
+Fast-forwarded main from ed455f7 to 87aa5cb, including developer-image recovery,
+bilingual portable/WDA documentation, source packaging and corrected UxPlay
+inventory provenance. No merge conflicts or application edits were needed.
+Updated the current README/release notes to describe a public unsigned pre-release.
+The packaged/tagged source remains 87aa5cb; these publication notes do not alter
+the verified archives, app/runtime bytes, preview tag or stable checkpoint.
+
+The final portable ZIP is 29,580,447 bytes, SHA256
+258e66df2c3202652b3e633bc46ded7fbb6a5556ea8b51bbe190e8f029a91533.
+Corresponding source is 553,581,786 bytes, SHA256
+b76dffda8751ec4a98d62a915e3eb4896104d9b774d6dad1e8dce0bc1a46d3ac.
+All five draft assets had GitHub digests matching local files. Exact extracted
+UI/AirPlay startup and shutdown passed with fresh config and Windows-only PATH;
+source CRC/hash checks, offline Cargo metadata and offline forwarder tests/build
+passed. Publication does not imply clean-machine, signing or new physical tests.
+The user's subsequently approved cleanup removed exactly the 15 listed temporary
+targets; stable/candidate EXEs, final assets, Git tree and refs were verified intact.

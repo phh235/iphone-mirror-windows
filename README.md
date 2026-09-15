@@ -38,11 +38,13 @@ show black bars. Explicit 1:1 and Fill selections are retained.
 
 ## Start using iMirror
 
-The current distribution being prepared is a **portable ZIP**. See
-[release notes](https://github.com/phh235/iphone-mirror-windows/releases) for its
-exact validation status. Extract everything and open `START-HERE.html` or
-`iMirror.exe`. Draft releases are visible only to repository collaborators.
-No current ZIP is claimed to have passed clean-Windows validation.
+Download the **Windows x64 portable ZIP** from
+[GitHub Releases](https://github.com/phh235/iphone-mirror-windows/releases).
+The current release is **v0.1.0-preview.1**, an unsigned public pre-release.
+Extract everything and open `START-HERE.html` for Vietnamese/English instructions,
+or `iMirror.exe` to run. Clean-Windows validation is still pending; read the exact
+release notes before use. The corresponding-source ZIP is for developers,
+not the application download.
 
 [Portable guide — Tiếng Việt](docs/PORTABLE.vi.md) ·
 [Portable guide — English](docs/PORTABLE.en.md) ·
