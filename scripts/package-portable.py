@@ -161,6 +161,23 @@ def main():
     inventory=json.loads((stage/'licenses/inventory.json').read_text(encoding='utf-8-sig'))
     if inventory.get('missing_notice_files'):
         raise RuntimeError('Missing runtime license notices')
+    airplay_build=json.loads((stage/'AIRPLAY_BUILD_INPUTS.json').read_text(encoding='utf-8-sig'))
+    if digest(stage/'AirPlay/UxPlay.exe') != airplay_build['helper_sha256'].lower():
+        raise RuntimeError('UxPlay does not match recorded build')
+    for row in airplay_build['modified_source']:
+        path=(ROOT/row['path']).resolve()
+        if not path.is_relative_to(ROOT/'vendor/uxplay') or digest(path)!=row['sha256'].lower():
+            raise RuntimeError('UxPlay source differs from recorded build')
+    for row in inventory['native_files']:
+        path=(stage/'AirPlay'/row['path']).resolve()
+        if not path.is_relative_to(stage/'AirPlay'):
+            raise RuntimeError('Invalid runtime inventory path')
+        actual=digest(path)
+        if row['path'].lower()=='uxplay.exe':
+            row.update(sha256=actual,bytes=path.stat().st_size,build_evidence='AIRPLAY_BUILD_INPUTS.json')
+        elif row['sha256'].lower()!=actual:
+            raise RuntimeError('Native package provenance mismatch: '+row['path'])
+    (stage/'licenses/inventory.json').write_text(json.dumps(inventory,indent=2)+'\n',encoding='utf-8')
     notices=(stage/'licenses/THIRD_PARTY_LICENSES.md').read_text(encoding='utf-8-sig')
     notices+='\n## Additional staged components\n\n'
     notices+='WDA: go-ios (MIT), iMirror forwarder (GPL-3.0-only); all dependency notices are in WDA/licenses and exact provenance in WDA/runtime-manifest.json. The official go-ios CLI has modified revision metadata; exact source reconstruction is not claimed.\n\n'
