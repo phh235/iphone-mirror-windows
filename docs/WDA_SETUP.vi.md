@@ -36,7 +36,20 @@ Payload/
     ... toàn bộ file/framework/plugin của runner ...
 ```
 
-Tạo thư mục Payload, giải nén nguyên app vào đó, nén **Payload** thành ZIP rồi đổi
+Loại bỏ các thư mục **`.dSYM`** nếu có trong app: đó là dữ liệu debug, không phải
+runner để cài lên iPhone. Sideloadly 0.70.1 đã từ chối IPA cũ tại file DWARF trong
+`PlugIns/WebDriverAgentRunner.xctest.dSYM`. Giữ nguyên thư mục
+`PlugIns/WebDriverAgentRunner.xctest` và framework thật bên trong.
+
+Với archive v16.12.8 dùng trong dự án, script tạo IPA và kiểm tra hash từng file
+còn lại (dành cho máy chuẩn bị gói, không thay thế bước ký):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-wda-ipa.ps1 -UpstreamArchive "C:\path\to\WebDriverAgentRunner-Runner.zip" -OutputIpa "work\wda-setup\WebDriverAgent-v16.12.8-sideloadly.ipa"
+```
+
+Nếu chuẩn bị bằng Explorer, tạo thư mục Payload, giải nén app đã bỏ `.dSYM` vào
+đó, nén **Payload** thành ZIP rồi đổi
 đuôi `.zip` thành `.ipa` (bật View → File name extensions trong Explorer). Không
 nén thêm thư mục cha, không bỏ plugin XCTest, không đổi tên ZIP thành IPA nếu
 bên trong chưa có Payload. `Invalid file` thường cần kiểm tra lại archive/cấu trúc.

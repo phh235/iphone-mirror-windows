@@ -1280,3 +1280,132 @@ source CRC/hash checks, offline Cargo metadata and offline forwarder tests/build
 passed. Publication does not imply clean-machine, signing or new physical tests.
 The user's subsequently approved cleanup removed exactly the 15 listed temporary
 targets; stable/candidate EXEs, final assets, Git tree and refs were verified intact.
+
+## 2026-10-08 — WDA signing renewal and Sideloadly debug-bundle rejection
+
+The user reported unavailable WDA control. Read-only probes found the registered
+USB phone, Developer Mode enabled, developer image mounted and the registered
+runner installed. The phone displayed "WebDriverAgentRunner-Runner Is No Longer
+Available". The archived signed IPA profile had expired on 2026-09-19; that date
+was not read from the currently installed profile, so expiry versus revocation
+on the phone is not separately proven. No tap/swipe, driver change or signing
+operation was performed during these probes.
+
+During user-driven renewal, Sideloadly 0.70.1 rejected SignBinary at the DWARF file
+inside PlugIns/WebDriverAgentRunner.xctest.dSYM. The previously supplied IPA was
+an unchanged Payload repack of the upstream runner, including debug symbols.
+Added scripts/prepare-wda-ipa.ps1 for the hash-pinned v16.12.8 archive: omit only
+.dSYM entries, retain the actual .xctest/framework/executables and verify every
+retained entry's length and SHA256 against upstream. Original IPA is preserved.
+
+New unsigned input: work/wda-setup/WebDriverAgent-v16.12.8-sideloadly.ipa,
+695,810 bytes, SHA256
+4409c9b9c1397e1591719b876589d5051ee08e498f21ee8d5e23956ad48ff12f.
+Nine debug entries omitted; all 19 retained entries match upstream. Script ran
+successfully under Windows PowerShell 5.1; documentation check passed. Updated
+both WDA setup guides. Sideloadly sign/install and real WDA launch remain UNTESTED
+for this new input until the user completes signing. No Rust/media/BLE/input
+implementation or existing release binary was changed; no release was published.
+
+## 2026-10-09 — renewed runner blocked by explicit profile trust
+
+After the user reported Sideloadly Done and phone restart, native app inventory
+found the registered WDA bundle installed with ProfileValidated=true. This is
+installation metadata, not proof the user has trusted its developer profile.
+The app successfully remounted the developer image after reboot. Clicks were
+received locally and rejected before enqueue because managed WDA was not Ready.
+
+A standalone startup probe, using only owned existing native helpers and no phone
+input, established the tunnel but failed to launch the runner (no PID returned).
+Bounded phone syslog collection during this attempt provided the specific reason:
+"signature state: Needs Explicit User Trust, reason: User hasn't trusted the
+profile." Asked the user to explicitly Trust/Verify the newly installed profile
+under Settings > General > VPN & Device Management before further signing or
+runner tests. No automatic Trust, signing-key access, install, tap/swipe or Rust
+implementation change was performed. Normal iMirror was reopened afterwards.
+
+The Sideloadly cache IPA was separately found byte-identical to the unsigned input.
+Its host/plugin signature inspection therefore does NOT describe the installed
+signed application. Corrected local evidence scope; no nested-signature failure
+is claimed from that cache. Current trust blocker is recorded in local
+work/wda-check-20261008/current-blocker-20261009.json. Trust completion and real
+control acceptance are still pending.
+
+The user subsequently replied "oke thấy được rồi đó". Readback from the existing
+app process 25824 showed backend=2, app/runtime ready=true, generation=1, no error,
+and WDA /status ready=true. Two user-originated tap requests were queued/dispatched
+with zero failures. Record restored runner/server/session readiness after explicit
+profile Trust and the user's recovery report; HTTP success alone is not an
+independent physical visual-response measurement. The assistant sent no phone
+input. No additional signing or application rebuild was required to clear this
+trust blocker. Local evidence: work/wda-check-20261008/recovery-20261009.json.
+
+The user then explicitly confirmed ordinary physical taps and swipes work, while
+the bottom-edge gesture to open App Switcher does not. Record tap/list-swipe
+recovery as user-confirmed on this setup. Current production Gesture only records
+DOWN and UP; WDA sends a move followed immediately by UP, without an endpoint
+hold. Button::AppSwitcher is explicitly unsupported in the WDA dispatch match.
+
+Sent one complete W3C touch probe through the existing ready session: (196,850)
+to (196,408) over 300 ms, then 600 ms pause and UP, on 393x852 geometry. HTTP
+completed in 1794.45 ms; the user reported no physical response. This is a failed
+physical App Switcher test, not a successful implementation. No production swipe
+or renderer changes were made. A separate two-Home-command probe completed both
+supported WDA calls (502.55 / 498.86 ms); the user confirmed only Home appeared,
+so this is an App Switcher FAIL. Local
+evidence: work/app-switcher-20261009. No code/backend capability is promoted from
+HTTP success alone.
+
+Guided the user to add App Switcher to the iPhone AssistiveTouch top-level menu,
+then try clicking that system control through the working mirror/WDA tap path.
+This is an Apple-supported accessibility action, not a new native iMirror feature;
+physical WDA operation of the floating control is pending. No additional test
+gestures or production implementation changes were made after the two failures.
+
+## 2026-10-09 — bounded iPhone-use mechanism pilot
+
+Audited iPhone-use revision 23b8c73 without installing/running its plugin or AI
+stack. The user then approved a short real-device mechanism trial and prepared
+Settings with USB connected and Wireless visible. Used a diagnostic .NET HTTP
+client for both candidates, preserving the existing WDA runner/session/settings
+and Go forwarder. No Rust, media, BLE or Raw Input implementation changes.
+
+Readiness probes confirmed status ready, phone unlocked, usable existing session,
+Settings foreground, readable UI source and 393x852 viewport. Idle timeout and
+animation cool-off were already zero; no duplicate tuning was applied. Ten GET
+/status calls averaged 1.5499 ms (max 2.1585 ms). This includes loopback, forwarding
+and a lightweight WDA handler, not a separate TCP-only or XCTest timing.
+
+Sent four paired ordinary swipes, two per candidate, in A/B/B/A order. Existing
+W3C 300 ms moves: 919.1926 and 776.8978 ms HTTP. Native dragfromtoforduration with
+0.1 s initial press: 1666.0943 and 1710.9404 ms. All changed the UI source, but
+physical smoothness needs the user reply. Native drag has different duration
+semantics and was approximately 1.99x slower in this small pilot; NOT KEPT.
+
+One existing pressButton Home returned in 474.933 ms; one standalone homescreen
+returned in 214.3391 ms. Immediate foreground readback did not report SpringBoard
+in either case, and Settings was then reactivated for fixture restoration. This
+does not establish whether Home appeared briefly or completed: candidate remains
+UNVERIFIED pending visual acceptance/a properly bounded postcondition check.
+Do not promote faster acknowledgement into a completed-phone-action claim.
+
+Exactly four swipe calls, two Home calls and two Settings fixture activations were
+sent; no settings edits or input retries. App process 25824 retained WDA Ready,
+runtime generation 1 and no error afterwards. Results under local
+work/iphone-use-trial-20261009/ab-result.json and summary.json. No new binary,
+main merge or release. Two/one samples per operation do not support robust P95/P99
+claims, and these are diagnostic-client HTTP times, not Rust/UI or input-to-visual
+measurements. Deadline/recovery code has not yet been ported to production.
+
+## 2026-10-16 — WDA IPA preparation revalidation before publication
+
+Re-ran the pinned runner preparation under Windows PowerShell 5.1. All 19 retained
+entries matched upstream; nine debug entries were omitted. Output remained
+695,810 bytes with SHA256
+4409c9b9c1397e1591719b876589d5051ee08e498f21ee8d5e23956ad48ff12f.
+ZIP executable attributes and timestamps were also preserved. Negative checks
+confirmed refusal to overwrite an existing IPA, use a mismatched source digest
+or write outside the workspace. These are archive/software checks, not a new
+sign/install or real-device test. Existing EXE/portable ZIP bytes were unchanged;
+no phone inputs or release replacements were performed. Local evidence:
+work/merge-validation-20261016/wda-ipa-validation.json.
