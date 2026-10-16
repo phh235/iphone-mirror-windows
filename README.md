@@ -1,13 +1,25 @@
 <img src="assets/logo.png" width="96" alt="iMirror logo">
 
-# iMirror
+# iMirror — iPhone Screen Mirroring for Windows
 
-Mirror and control an iPhone from Windows with a lightweight native desktop app.
+Open-source iPhone screen mirroring and control for Windows. Mirror your iPhone
+to a PC over **USB** or **wireless AirPlay**, then use a **Bluetooth mouse and
+keyboard** with AssistiveTouch, or optional **WebDriverAgent (WDA)** control.
+
 Built with Rust, windows-rs and Win32, with Media Foundation decoding and D3D11
 video rendering. No Electron, WebView, Node.js or Python runtime in the app.
 
+**Tiếng Việt:** Phản chiếu màn hình iPhone lên máy tính Windows qua USB hoặc
+Wi-Fi, điều khiển bằng chuột và bàn phím Bluetooth; WDA là lựa chọn nâng cao.
+
 [Hướng dẫn tiếng Việt](HUONG_DAN.md) · [User guide](docs/USER_GUIDE.md) ·
 [Build from source](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md)
+
+**[Download for Windows x64 — portable preview ZIP](https://github.com/phh235/iphone-mirror-windows/releases/download/v0.1.0-preview.1/iMirror-v0.1.0-windows-x64.zip)**
+· [Release notes and checksums](https://github.com/phh235/iphone-mirror-windows/releases/tag/v0.1.0-preview.1)
+
+The download is **v0.1.0-preview.1**, an **unsigned engineering preview**.
+Clean-Windows installation and broader device compatibility are not yet validated.
 
 ## Current status
 
@@ -38,12 +50,10 @@ show black bars. Explicit 1:1 and Fill selections are retained.
 
 ## Start using iMirror
 
-Download the **Windows x64 portable ZIP** from
+Download the **Windows x64 portable ZIP** linked above, or choose it under
 [GitHub Releases](https://github.com/phh235/iphone-mirror-windows/releases).
-The current release is **v0.1.0-preview.1**, an unsigned public pre-release.
 Extract everything and open `START-HERE.html` for Vietnamese/English instructions,
-or `iMirror.exe` to run. Clean-Windows validation is still pending; read the exact
-release notes before use. The corresponding-source ZIP is for developers,
+or `iMirror.exe` to run. The corresponding-source ZIP is for developers,
 not the application download.
 
 [Portable guide — Tiếng Việt](docs/PORTABLE.vi.md) ·
@@ -64,6 +74,45 @@ EXE alone. A fresh Git checkout contains source, not a prebuilt application.
 
 Detailed setup, icon meanings, sensitivity, wireless and troubleshooting:
 [English](docs/USER_GUIDE.md) / [Tiếng Việt](HUONG_DAN.md).
+
+## iPhone mirroring and control FAQ
+
+### Can I mirror an iPhone to Windows using a USB cable?
+
+Yes, on compatible devices and drivers. Connect an unlocked iPhone, accept
+**Trust This Computer**, and select USB or Automatic in iMirror. Compatible
+Apple device software is required for USB connection. Follow the
+[USB setup and troubleshooting guide](docs/USER_GUIDE.md#usb-mirroring).
+
+### Can I mirror my iPhone wirelessly over Wi-Fi?
+
+iMirror includes an AirPlay receiver for Windows. Put the iPhone and PC on the
+same local network, select Wireless in iMirror, then choose its receiver in
+**Control Center → Screen Mirroring**. See [wireless setup](docs/USER_GUIDE.md#wireless)
+for network requirements and the current validation limits.
+
+### Can I control my iPhone with a Windows mouse and keyboard?
+
+Bluetooth Mouse uses iPhone AssistiveTouch for relative pointer movement,
+clicking, dragging and scrolling, with keyboard input when its connection is
+ready. It needs a compatible Windows Bluetooth adapter with BLE peripheral-role
+support. Video and control use separate connections; AirPlay does not carry
+mouse commands. Follow the [Bluetooth control guide](docs/USER_GUIDE.md#bluetooth-mouse-setup).
+
+### Do I need a Mac or a signed iPhone app?
+
+USB mirroring and Bluetooth Mouse do not require a Mac, jailbreak, Apple ID
+sign-in or a signed companion app. Optional WDA control requires Developer Mode
+and a separately signed/trusted runner on the iPhone. A compatible prebuilt
+runner can be signed from Windows; building or modifying the runner requires
+Mac/Xcode. See [WDA setup](docs/WDA_SETUP.en.md).
+
+### Does iMirror guarantee 60 FPS or realtime touch control?
+
+No. Actual source and display FPS depend on the iPhone, connection and PC.
+WDA swipes currently execute after mouse release; they are not continuous
+realtime touch. Audio playback is disabled. See [validation and release gates](docs/VALIDATION.md)
+for tested behavior and unresolved limitations.
 
 ## Development
 
