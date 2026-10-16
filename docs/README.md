@@ -4,6 +4,7 @@
 
 - [Portable ZIP: Tiếng Việt](PORTABLE.vi.md) / [English](PORTABLE.en.md)
 - [WDA setup: Tiếng Việt](WDA_SETUP.vi.md) / [English](WDA_SETUP.en.md)
+- [Copyable setup prompts for agents: Tiếng Việt](AGENT_SETUP.vi.md) / [English](AGENT_SETUP.en.md)
 
 - [Vietnamese guide](../HUONG_DAN.md)
 - [English guide](USER_GUIDE.md)

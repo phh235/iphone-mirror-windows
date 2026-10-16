@@ -50,6 +50,10 @@ not the application download.
 [Portable guide — English](docs/PORTABLE.en.md) ·
 [WDA setup — Tiếng Việt](docs/WDA_SETUP.vi.md) · [WDA setup — English](docs/WDA_SETUP.en.md)
 
+**Set up with an agent:** copy the [Tiếng Việt](docs/AGENT_SETUP.vi.md) or
+[English](docs/AGENT_SETUP.en.md) prompts for app setup, Bluetooth, Wireless,
+optional WDA, signing renewal and troubleshooting.
+
 For a supplied engineering app folder, keep **all** files beside `iMirror.exe`,
 including the USB helpers, DLLs, licenses and `AirPlay`/`WDA` directories. Do not copy the
 EXE alone. A fresh Git checkout contains source, not a prebuilt application.
