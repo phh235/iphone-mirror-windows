@@ -36,7 +36,16 @@ Payload/
     ... all original runner files, frameworks and plugins ...
 ```
 
-Extract the complete app into Payload, compress **Payload** into ZIP, then rename
+Exclude **`.dSYM` directories** from the installable app: they contain debug
+symbols. Sideloadly 0.70.1 rejected the old IPA at the DWARF file under
+`PlugIns/WebDriverAgentRunner.xctest.dSYM`. Retain the actual
+`PlugIns/WebDriverAgentRunner.xctest` bundle and its framework.
+For the pinned v16.12.8 archive, `scripts/prepare-wda-ipa.ps1` creates a new IPA,
+removes only those debug directories and checks all retained entry hashes against
+upstream. This prepares an unsigned archive; successful signing/install and WDA
+launch still require device validation.
+
+Extract the app without `.dSYM` into Payload, compress **Payload** into ZIP, then rename
 the ZIP extension to `.ipa`. Enable Explorer's file-name extensions first. Do not
 include an extra outer directory or remove XCTest plugins. Renaming the upstream
 ZIP alone does not add the required Payload structure. An Invalid file error
